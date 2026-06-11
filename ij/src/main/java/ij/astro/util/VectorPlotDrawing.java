@@ -1,5 +1,7 @@
 package ij.astro.util;
 
+import static ij.gui.Plot.AIJ_LEGEND_ENTRY;
+import static ij.gui.Plot.AIJ_V_MARKER;
 import static ij.gui.Plot.ARROW_DOWN;
 import static ij.gui.Plot.ARROW_LEFT;
 import static ij.gui.Plot.ARROW_NORTH_EAST;
@@ -8,7 +10,10 @@ import static ij.gui.Plot.ARROW_RIGHT;
 import static ij.gui.Plot.ARROW_SOUTH_EAST;
 import static ij.gui.Plot.ARROW_SOUTH_WEST;
 import static ij.gui.Plot.ARROW_UP;
+import static ij.gui.Plot.AUTO_POSITION;
 import static ij.gui.Plot.BAR;
+import static ij.gui.Plot.BOTTOM_LEFT;
+import static ij.gui.Plot.BOTTOM_RIGHT;
 import static ij.gui.Plot.BOX;
 import static ij.gui.Plot.CENTER;
 import static ij.gui.Plot.CIRCLE;
@@ -19,9 +24,17 @@ import static ij.gui.Plot.DIAMOND;
 import static ij.gui.Plot.DOT;
 import static ij.gui.Plot.FILLED;
 import static ij.gui.Plot.LEFT;
+import static ij.gui.Plot.LEGEND_BOTTOM_UP;
+import static ij.gui.Plot.LEGEND_LINELENGTH;
+import static ij.gui.Plot.LEGEND_PADDING;
+import static ij.gui.Plot.LEGEND_POSITION_MASK;
+import static ij.gui.Plot.LEGEND_TRANSPARENT;
 import static ij.gui.Plot.MIN_X_GRIDSPACING;
 import static ij.gui.Plot.RIGHT;
 import static ij.gui.Plot.SEPARATED_BAR;
+import static ij.gui.Plot.SEPARATED_BAR_WIDTH;
+import static ij.gui.Plot.TOP_LEFT;
+import static ij.gui.Plot.TOP_RIGHT;
 import static ij.gui.Plot.TRIANGLE;
 import static ij.gui.Plot.X;
 import static ij.gui.Plot.X_GRID;
@@ -52,6 +65,7 @@ import java.awt.font.TextLayout;
 import java.awt.geom.AffineTransform;
 import java.awt.geom.Ellipse2D;
 import java.awt.geom.Line2D;
+import java.awt.geom.Path2D;
 import java.awt.geom.Rectangle2D;
 import java.awt.image.BufferedImage;
 import java.text.AttributedString;
@@ -60,6 +74,7 @@ import java.util.Arrays;
 import java.util.Vector;
 
 import ij.IJ;
+import ij.Prefs;
 import ij.astro.accessors.IPlotObject;
 import ij.astro.accessors.IPlotProperties;
 import ij.gui.Plot;
@@ -68,6 +83,8 @@ import ij.util.Java2;
 import ij.util.Tools;
 
 public class VectorPlotDrawing {
+    public static final String PROPERTY_KEY = "aijVectorPlot";
+    public static final ScopedValue<Boolean> SCALED_PLOT = ScopedValue.newInstance();
     protected final Vector<? extends IPlotObject> allPlotObjects;
     protected final Plot plot;
     protected final double frameWidth;
@@ -98,23 +115,33 @@ public class VectorPlotDrawing {
             g2.setRenderingHint(RenderingHints.KEY_STROKE_CONTROL, RenderingHints.VALUE_STROKE_PURE);
             initPlotDrawing(g2);
             for (IPlotObject plotObject : allPlotObjects) {
-                //todo mimic order of drawing, see drawContents
-                //  gonna ignore for now as this works
-                drawPlotObject(g2, plotObject);
+                if (!plotObject.hasFlag(IPlotObject.CONSTRUCTOR_DATA)) {
+                    drawPlotObject(g2, plotObject);
+                }
             }
+
+            // draw the line passed with the constructor last, using the settings present when calling 'draw'
+            if (!allPlotObjects.isEmpty() && allPlotObjects.getFirst().hasFlag(IPlotObject.CONSTRUCTOR_DATA)) {
+                var mainPlotObject = allPlotObjects.getFirst();
+                drawPlotObject(g2, mainPlotObject);
+            }
+
+            var pp = (IPlotProperties) plot.pp;
+            var stroke = new BasicStroke(plot.sc(pp.getFrame().getLineWidth()));
+            g2.setStroke(stroke);
+            g2.setColor(pp.getFrame().getColor());
+            g2.setColor(Color.BLACK);
+
+            // Plot border
+            g2.drawRect(plot.frame.x, plot.frame.y, plot.frame.width - 1, plot.frame.height - 1);
+
+            drawPlotObject(g2, pp.getLegend());
         }
     }
 
     protected void initPlotDrawing(Graphics2D g) {
         g.setColor(Color.BLACK);
         drawAxesTicksGridNumbers(g, plot.steps);
-        var pp = (IPlotProperties) plot.pp;
-        var stroke = new BasicStroke(plot.sc(pp.getFrame().getLineWidth()));
-        g.setStroke(stroke);
-        g.setColor(pp.getFrame().getColor());
-        // Plot border
-        g.drawRect(plot.frame.x, plot.frame.y, plot.frame.width - 1, plot.frame.height - 1);
-        drawPlotObject(g, pp.getLegend());
     }
 
     void drawAxesTicksGridNumbers(Graphics2D g, double[] steps) {
@@ -654,8 +681,6 @@ public class VectorPlotDrawing {
         this.justification = justification;
     }
 
-    //todo other objects
-    // see https://github.com/rototor/pdfbox-graphics2d
     protected void drawPlotObject(Graphics2D g, IPlotObject plotObject) {
         if (plotObject == null) return;
         if (plotObject.hasFlag(IPlotObject.HIDDEN)) return;
@@ -671,15 +696,13 @@ public class VectorPlotDrawing {
                 g.setClip(mask);
                 int nPoints = Math.min(plotObject.getxValues().length, plotObject.getyValues().length);
 
-                if (plotObject.getShape() == BAR || plotObject.getShape() == SEPARATED_BAR)
-                //drawBarChart(plotObject);       // (separated) bars
-                //todo implement
+                if (plotObject.getShape() == BAR || plotObject.getShape() == SEPARATED_BAR) {
+                    drawBarChart(g, plotObject);       // (separated) bars
+                }
 
-                {
-                    if (plotObject.getShape() == FILLED) {   // filling below line
-                        g.setColor(plotObject.getColor2() != null ? plotObject.getColor2() : plotObject.getColor());
-                        drawFloatPolyLineFilled(g, plotObject.getxValues(), plotObject.getyValues(), nPoints);
-                    }
+                if (plotObject.getShape() == FILLED) {   // filling below line
+                    g.setColor(plotObject.getColor2() != null ? plotObject.getColor2() : plotObject.getColor());
+                    drawFloatPolyLineFilled(g, plotObject.getxValues(), plotObject.getyValues(), nPoints);
                 }
                 g.setColor(plotObject.getColor());
                 g.setStroke(new BasicStroke(plot.sc(plotObject.getLineWidth())));
@@ -727,6 +750,111 @@ public class VectorPlotDrawing {
                 }
                 g.setClip(null);
                 break;
+            case IPlotObject.SHAPES:
+                int iBoxWidth = 20;
+                g.setClip(plot.frame);
+                String shType = plotObject.getShapeType().toLowerCase();
+                if (shType.contains("rectangles")) {
+                    int nShapes = plotObject.getShapeData().size();
+
+                    for (int i = 0; i < nShapes; i++) {
+                        float[] corners = (float[])(plotObject.getShapeData().get(i));
+                        var x1 = plot.scaleXtoPxl(corners[0]);
+                        var y1 = plot.scaleYtoPxl(corners[1]);
+                        var x2 = plot.scaleXtoPxl(corners[2]);
+                        var y2 = plot.scaleYtoPxl(corners[3]);
+
+                        g.setStroke(new BasicStroke(plot.sc(plotObject.getLineWidth())));
+                        var left = Math.min(x1, x2);
+                        var right = Math.max(x1, x2);
+                        var top = Math.min(y1, y2);
+                        var bottom = Math.max(y1, y2);
+
+                        var r1 = new Rectangle2D.Double(left, top, right-left, bottom - top);
+                        var cBox = new Rectangle2D.Double(plot.frame.x, plot.frame.y, plot.frame.width, plot.frame.height).createIntersection(r1);
+                        if (plotObject.getColor2() != null) {
+                            g.setColor(plotObject.getColor2());
+                            g.fill(cBox);
+                        }
+                        g.setColor(plotObject.getColor());
+                        g.draw(cBox);
+                    }
+                    g.setClip(null);
+                    break;
+                }
+                if (shType.equals("redraw_grid")) {
+                    g.setStroke(new BasicStroke(plot.sc(1)));
+                    redrawGrid(g);
+                    g.setClip(null);
+                    break;
+                }
+                if (shType.contains("boxes")) {
+
+                    String[] parts = Tools.split(shType);
+                    for (int jj = 0; jj < parts.length; jj++) {
+                        String[] pairs = parts[jj].split("=");
+                        if ((pairs.length == 2) && pairs[0].equals("width")) {
+                            iBoxWidth = Integer.parseInt(pairs[1]);
+                        }
+                    }
+                    boolean horizontal = shType.contains("boxesx");
+                    int nShapes = plotObject.getShapeData().size();
+                    var halfWidth = Math.round(plot.sc(iBoxWidth / 2f));
+                    for (int i = 0; i < nShapes; i++) {
+
+                        float[] coords = (float[])(plotObject.getShapeData().get(i));
+
+                        if (!horizontal) {
+
+                            var x = plot.scaleXtoPxl(coords[0]);
+                            var y1 = plot.scaleYtoPxl(coords[1]);
+                            var y2 = plot.scaleYtoPxl(coords[2]);
+                            var y3 = plot.scaleYtoPxl(coords[3]);
+                            var y4 = plot.scaleYtoPxl(coords[4]);
+                            var y5 = plot.scaleYtoPxl(coords[5]);
+                            g.setStroke(new BasicStroke(plot.sc(plotObject.getLineWidth())));
+
+                            var r1 = new Rectangle2D.Double(x - halfWidth, y4, halfWidth * 2, y2 - y4);
+                            var cBox = new Rectangle2D.Double(plot.frame.x, plot.frame.y, plot.frame.width, plot.frame.height).createIntersection(r1);
+                            if (y1 != y2 || y4 != y5)//otherwise omit whiskers
+                            {
+                                g.draw(new Line2D.Double(x, y1, x, y5));//whiskers
+                            }
+                            if (plotObject.getColor2() != null) {
+                                g.setColor(plotObject.getColor2());
+                                g.fill(cBox);
+                            }
+                            g.setColor(plotObject.getColor());
+                            g.draw(cBox);
+                            g.setClip(plot.frame);
+                            g.draw(new Line2D.Double(x - halfWidth, y3, x + halfWidth - 1, y3));
+                        }
+
+                        if (horizontal) {
+                            var y = plot.scaleYtoPxl(coords[0]);
+                            var x1 = plot.scaleXtoPxl(coords[1]);
+                            var x2 = plot.scaleXtoPxl(coords[2]);
+                            var x3 = plot.scaleXtoPxl(coords[3]);
+                            var x4 = plot.scaleXtoPxl(coords[4]);
+                            var x5 = plot.scaleXtoPxl(coords[5]);
+                            g.setStroke(new BasicStroke(plot.sc(plotObject.getLineWidth())));
+                            if(x1 !=x2 || x4 != x5)//otherwise omit whiskers
+                                g.draw(new Line2D.Double(x1, y, x5, y));//whiskers
+                            var r1 = new Rectangle2D.Double(x2, y - halfWidth, x4 - x2, halfWidth * 2);
+                            var cBox = new Rectangle2D.Double(plot.frame.x, plot.frame.y, plot.frame.width, plot.frame.height).createIntersection(r1);;
+                            if (plotObject.getColor2() != null) {
+                                g.setColor(plotObject.getColor2());
+                                g.fill(cBox);
+                            }
+                            g.setColor(plotObject.getColor());
+                            g.draw(cBox);
+                            g.setClip(plot.frame);
+                            g.draw(new Line2D.Double(x3, y - halfWidth, x3, y + halfWidth - 1));
+                        }
+                    }
+                    g.setClip(null);
+                    break;
+                }
             case IPlotObject.LINE:
                 g.setClip(mask);
                 g.draw(new Line2D.Double(plot.scaleXtoPxl(plotObject.getX()),
@@ -767,11 +895,270 @@ public class VectorPlotDrawing {
                 int yt = (int) (type == IPlotObject.LABEL ? plot.scaleYtoPxl(plotObject.getY()) : topMargin + (int) (plotObject.getY() * frameHeight));
                 //todo bundle font to make it selectable/searchable, this is vectorized by default
                 // see https://github.com/rototor/pdfbox-graphics2d#rendering-text-using-fonts-vs-vectors
-                drawString(g, plotObject.getLabel(), xt, yt);
+                var label = plotObject.getLabel();
+
+                if (label.startsWith(Plot.X_LABEL_V_ANCHOR)) {
+                    label = label.substring(Plot.X_LABEL_V_ANCHOR.length());
+                    var pp = (IPlotProperties) plot.pp;
+                    var scFont = plot.scFont(pp.getFrame().getFont());
+                    var fm = g.getFontMetrics(pp.getxLabel().getFont() == null ? scFont.deriveFont(12f) : plot.scFont(pp.getxLabel().getFont()).deriveFont(12f));
+                    var y = topMargin + frameHeight + fm.getHeight() * 5 / 4f + plot.sc(2);
+                    y += plot.simpleXAxis() ? -fm.getHeight() : plot.sc(1);
+                    y += fm.getHeight() + fm.getDescent();
+                    yt = (int) (y);
+                }
+
+                drawString(g, label, xt, yt);
                 break;
+            case IPlotObject.LEGEND:
+                drawLegend(plotObject, g);
             default:
                 break;
         }
+    }
+
+    /** Draw a bar at each point */
+    void drawBarChart(Graphics2D g, IPlotObject plotObject) {
+        int n = Math.min(plotObject.getxValues().length, plotObject.getyValues().length);
+        String[] xCats = plot.labelsInBraces('x'); // do we have categories at the x axis instead of numbers?
+        boolean separatedBars = plotObject.getShape() == SEPARATED_BAR || xCats != null;
+        var halfBarWidthInPixels = n <= 1 ? Math.max(1, frameWidth/2-2) : 0;
+        if (separatedBars && n > 1)
+            halfBarWidthInPixels = Math.max(1, Math.round(Math.abs
+                    (0.5*(plotObject.getxValues()[n-1] - plotObject.getxValues()[0])/(n-1) * plot.xScale * SEPARATED_BAR_WIDTH)));
+        int y0 = plot.scaleYWithOverflow(0);
+        boolean yZeroInFrame = !plot.logYAxis && plot.yBasePxl>plot.frame.y && plot.yBasePxl<plot.frame.y+plot.frame.height;
+        int prevY = y0;
+        for (int i = 0; i < n; i++) {
+            double left=0, right=0;
+            if (halfBarWidthInPixels == 0) {         //bar boundaries in the middle between successive x values
+                left = plot.scaleXtoPxl(i > 0 ? 0.5f*(plotObject.getxValues()[i-1]+plotObject.getxValues()[i]) :
+                        1.5f*plotObject.getxValues()[i] - 0.5f*plotObject.getxValues()[i+1]);
+                right = plot.scaleXtoPxl(i < n-1 ? 0.5f*(plotObject.getxValues()[i]+plotObject.getxValues()[i+1]) :
+                        1.5f*plotObject.getxValues()[i] - 0.5f*plotObject.getxValues()[i-1]);
+            } else {
+                var x = plot.scaleXtoPxl(plotObject.getxValues()[i]);
+                left = x - halfBarWidthInPixels;     //separated bars or n<=1 : fixed bar width
+                right = x + halfBarWidthInPixels;
+            }
+            if (left < plot.frame.x) left = plot.frame.x;
+            if (left > plot.frame.x+plot.frame.width) left = plot.frame.x+plot.frame.width;
+            if (right < plot.frame.x) right = plot.frame.x;
+            if (right > plot.frame.x+plot.frame.width) right = plot.frame.x+plot.frame.width;
+            int y = plot.scaleYWithOverflow(plotObject.getyValues()[i]);
+            if (plotObject.getColor2() != null) {
+                g.setColor(plotObject.getColor2());
+                g.fill(new Rectangle2D.Double(left, y, right-left, Math.abs(y-y0)));
+            }
+            g.setColor(plotObject.getColor());
+            g.setStroke(new BasicStroke(plot.sc(plotObject.getLineWidth())));
+            if (separatedBars) {
+                g.draw(new Line2D.Double(left, y0, left, y));      //up
+                g.draw(new Line2D.Double(left, y, right, y));      //right
+                g.draw(new Line2D.Double(right, y, right, y0));    //down
+                if (yZeroInFrame)
+                    g.draw(new Line2D.Double(left, y0, right, y0));//baseline
+            } else {
+                g.draw(new Line2D.Double(left, prevY, left, y));   //up or down
+                g.draw(new Line2D.Double(left, y, right, y));      //right
+                if (i == n - 1)
+                    g.draw(new Line2D.Double(right, y, right, y0));//last down
+                prevY = y;
+            }
+        }
+    }
+
+    /** Draw the legend */
+    void drawLegend(IPlotObject legendObject, Graphics2D g) {
+        var pp = (IPlotProperties) plot.pp;
+        g.setFont(plot.scFont(legendObject.getFont()));
+        int nLabels = 0;
+        int maxStringWidth = 0;
+        float maxLineThickness = 0;
+        Vector<? extends IPlotObject> usedPlotObjects = allPlotObjects;
+        Vector<? extends IPlotObject> indexedObjects = plot.getIndexedPlotObjects();
+        if(indexedObjects != null)
+            usedPlotObjects= indexedObjects;
+
+        for (IPlotObject plotObject : usedPlotObjects)
+            if (plotObject.getType() == IPlotObject.XY_DATA && !plotObject.hasFlag(IPlotObject.HIDDEN) && plotObject.getLabel() != null) {		//label exists: was set now or previously
+                nLabels++;
+                String label = plotObject.getLabel();
+                if (indexedObjects != null)
+                    label = label.substring(label.indexOf("__") + 2);
+                int w = getStringWidth(g, label);
+                if (w > maxStringWidth) maxStringWidth = w;
+                if (plotObject.getLineWidth() > maxLineThickness) maxLineThickness = plotObject.getLineWidth();
+            }
+        if (nLabels == 0) return;
+        if (pp.antialiasedText() && plot.getScale() > 1)		//fix incorrect width of large fonts
+            maxStringWidth = (int)((1 + 0.004*plot.getScale()) * maxStringWidth);
+        int frameThickness = plot.sc(legendObject.getLineWidth() > 0 ? legendObject.getLineWidth() : 1);
+        FontMetrics fm = g.getFontMetrics();
+        setJustification(LEFT);
+        int lineHeight = fm.getHeight();
+        int height = nLabels*lineHeight + 2*plot.sc(LEGEND_PADDING);
+        int width = maxStringWidth + plot.sc(3*LEGEND_PADDING + LEGEND_LINELENGTH + maxLineThickness);
+        int positionCode = legendObject.getFlags() & LEGEND_POSITION_MASK;
+        if (positionCode == AUTO_POSITION)
+            positionCode = autoLegendPosition(width, height, frameThickness);
+        Rectangle rect = legendRect(positionCode, width, height, frameThickness);
+        int x0 = rect.x;
+        int y0 = rect.y;
+
+        g.setColor(Color.white);
+        setLineWidth(1);
+        if (!legendObject.hasFlag(LEGEND_TRANSPARENT)) {
+            g.fillRect(x0, y0, width, height);
+        } else if (plot.hasFlag(X_GRID | Y_GRID)) {	//erase grid
+            var stroke = new BasicStroke(plot.sc(pp.getFrame().getLineWidth()));
+            g.setStroke(stroke);
+            g.setColor(pp.getFrame().getColor());
+
+            var oldClip = g.getClip();
+            var oldColor = g.getColor();
+            var oldStroke = g.getStroke();
+
+            g.clip(new Rectangle2D.Double(x0, y0, width, height));
+
+            // erase grid by overdrawing with background color
+            g.setColor(Color.white);
+            //g.setStroke(new BasicStroke(1f));
+
+            drawAxesTicksGridNumbers(g, plot.steps);
+
+            g.setColor(oldColor);
+            g.setStroke(oldStroke);
+            g.setClip(oldClip);
+        }
+        setLineWidth(frameThickness);
+        g.setColor(legendObject.getColor());
+        g.drawRect(x0-frameThickness/2, y0-frameThickness/2, width+frameThickness, height);
+        boolean bottomUp = legendObject.hasFlag(LEGEND_BOTTOM_UP);
+        int y = y0 + frameThickness/2 + plot.sc(LEGEND_PADDING) + lineHeight/2;
+        if (bottomUp) y += (nLabels-1) * lineHeight;
+        int xText = x0 + frameThickness/2 + plot.sc(2f*LEGEND_PADDING + LEGEND_LINELENGTH + maxLineThickness);
+        int xMarker = x0 + frameThickness/2 + plot.sc(LEGEND_PADDING + 0.5f*(LEGEND_LINELENGTH + maxLineThickness));
+        int xLine0 = x0 + frameThickness/2 + plot.sc(LEGEND_PADDING) + 1;
+        for (IPlotObject plotObject : usedPlotObjects)
+            if (plotObject.getType() == IPlotObject.XY_DATA && !plotObject.hasFlag(IPlotObject.HIDDEN) && plotObject.getLabel() != null) {		//label exists: was set now or previously
+                int shape = plotObject.getShape();
+                if (shape == SEPARATED_BAR) shape = BOX; //for bar plots, draw a square in the legend
+                int yShiftLine = 0;
+                if (shape == FILLED || shape == BAR && plotObject.getColor2() != null)  //shift line up to make space for fill pattern
+                    yShiftLine = plot.sc(0.1f*legendObject.getFontSize() + 0.3f*plotObject.getLineWidth());
+                int markerSize = plotObject.getMarkerSize();
+                if (plotObject.getShape() == SEPARATED_BAR && markerSize < 0.6*legendObject.getFontSize())
+                    markerSize = 2*(int)(0.3*legendObject.getFontSize()) + 1; // for 'separated bar', a larger box (an odd number, to have it centered)
+                if (plotObject.hasFilledMarker() || (plotObject.getShape() == SEPARATED_BAR && plotObject.getColor2() != null)) {
+                    g.setColor(plotObject.getColor2());
+                    fillShape(g, shape, xMarker, y, markerSize);
+                } else if (yShiftLine != 0) {  //fill area below line (shape=FILLED or BAR)
+                    g.setColor(plotObject.getColor2() == null ? plotObject.getColor() : plotObject.getColor2());
+                    g.fillRect(xLine0, y-yShiftLine, 2*(xMarker - xLine0)+1, yShiftLine+(int)(0.3*legendObject.getFontSize()));
+                }
+                int lineWidth = plot.sc(plotObject.getLineWidth());
+                if (lineWidth < 1) lineWidth = 1;
+                setLineWidth(lineWidth);
+                if (plotObject.hasCurve() || plotObject.getShape()==BAR) {
+                    Color c = plotObject.getShape() == CONNECTED_CIRCLES ?
+                            (plotObject.getColor2() == null ? Color.black : plotObject.getColor2()) :
+                            plotObject.getColor();
+                    g.setColor(c);
+                    g.fillRect(xLine0, y-lineWidth/2-yShiftLine, 2*(xMarker - xLine0)+1, lineWidth); //draw line as a rectangle
+                }
+                if (plotObject.hasMarker() || plotObject.getShape() == SEPARATED_BAR) {
+                    Font saveFont = g.getFont();
+                    g.setColor(plotObject.getColor());
+                    drawShape(g, plotObject, xMarker, y, markerSize, -1);
+                    if (plotObject.getShape()==CUSTOM) g.setFont(saveFont);
+                }
+                g.setColor(plotObject.getColor());
+                setLineWidth(frameThickness);
+                String label = plotObject.getLabel();
+                if (indexedObjects != null){
+                    int start = label.indexOf("__");
+                    if(start >=0)
+                        label = label.substring(start+2);
+                }
+                drawString(g, label, xText, y+ lineHeight/2);
+                y += bottomUp ? -lineHeight : lineHeight;
+            }
+    }
+
+    /** The legend area; positionCode should be TOP_LEFT, TOP_RIGHT, etc. */
+    Rectangle legendRect(int positionCode, int width, int height, int frameThickness)  {
+        boolean leftPosition = positionCode == TOP_LEFT || positionCode == BOTTOM_LEFT;
+        boolean topPosition	 = positionCode == TOP_LEFT || positionCode == TOP_RIGHT;
+        var x0 = (leftPosition) ?
+                leftMargin + plot.sc(2*LEGEND_PADDING) + frameThickness/2D :
+                leftMargin + frameWidth - width - plot.sc(2*LEGEND_PADDING) - frameThickness/2D;
+        var y0 = (topPosition) ?
+                topMargin + plot.sc(LEGEND_PADDING) + frameThickness/2D :
+                topMargin + frameHeight - height - plot.sc(LEGEND_PADDING) + frameThickness/2D;
+        if (plot.hasFlag(Y_TICKS))
+            x0 += (leftPosition ? 1 : -1) * plot.sc(plot.tickLength - LEGEND_PADDING);
+        if (plot.hasFlag(X_TICKS))
+            y0 += (topPosition ? 1 : -1) * plot.sc(plot.tickLength - LEGEND_PADDING/2F);
+        return new Rectangle((int) x0, (int) y0, width, height);
+    }
+
+    int autoLegendPosition(int width, int height, int frameThickness) {
+        int[] candidates = {TOP_RIGHT, TOP_LEFT, BOTTOM_RIGHT, BOTTOM_LEFT};
+        int bestPosition = TOP_RIGHT;
+        int minHits = Integer.MAX_VALUE;
+
+        for (int positionCode : candidates) {
+            Rectangle rect = legendRect(positionCode, width, height, frameThickness);
+            int hits = countPlotPointsInRect(rect);
+
+            if (hits < minHits) {
+                minHits = hits;
+                bestPosition = positionCode;
+            }
+        }
+
+        return bestPosition;
+    }
+
+    private int countPlotPointsInRect(Rectangle rect) {
+        int hits = 0;
+
+        Vector<? extends IPlotObject> usedPlotObjects = allPlotObjects;
+        Vector<? extends IPlotObject> indexedObjects = plot.getIndexedPlotObjects();
+        if (indexedObjects != null) usedPlotObjects = indexedObjects;
+
+        int pad = plot.sc(LEGEND_PADDING + 2);
+        Rectangle expanded = new Rectangle(rect);
+        expanded.grow(pad, pad);
+
+        for (IPlotObject plotObject : usedPlotObjects) {
+            if (plotObject.getType() != IPlotObject.XY_DATA || plotObject.hasFlag(IPlotObject.HIDDEN)) {
+                continue;
+            }
+
+            float[] xs = plotObject.getxValues();
+            float[] ys = plotObject.getyValues();
+            if (xs == null || ys == null) continue;
+
+            int n = Math.min(xs.length, ys.length);
+            for (int i = 0; i < n; i++) {
+                float x = xs[i];
+                float y = ys[i];
+                if (Float.isNaN(x) || Float.isNaN(y)) continue;
+                if (plot.logXAxis && x <= 0) continue;
+                if (plot.logYAxis && y <= 0) continue;
+
+                double px = plot.scaleXtoPxl(x);
+                double py = plot.scaleYtoPxl(y);
+
+                if (expanded.contains(px, py)) {
+                    hits++;
+                }
+            }
+        }
+
+        return hits;
     }
 
     private void drawArrow(Graphics2D g, double x1, double y1, double x2, double y2, double size) {
@@ -879,13 +1266,11 @@ public class VectorPlotDrawing {
         int descent = g.getFontMetrics().getDescent();
 
         // Removed this check as ImageProcessor#drawString2 still draws even when false
-        if (cxx >= 0 /*&& cy - h >= 0*/) {
-            Java2.setAntialiasedText(g, true);
-            int baselineY = (h - descent) + cy - h;
-            var gv = g.getFont().createGlyphVector(g.getFontRenderContext(), s);
-            g.fill(gv.getOutline(cxx, baselineY));
-            cy += h;
-        }
+        Java2.setAntialiasedText(g, true);
+        int baselineY = (h - descent) + cy - h;
+        var gv = g.getFont().createGlyphVector(g.getFontRenderContext(), s);
+        g.fill(gv.getOutline(cxx, baselineY));
+        cy += h;
     }
 
     /**
@@ -894,13 +1279,21 @@ public class VectorPlotDrawing {
      * including all whitespace at the right.
      */
     public int getStringWidth(Graphics2D g, String s) {
+        var scaled = SCALED_PLOT.orElse(false);
+        if (scaled) {
+            g.scale(1/Prefs.getGuiScale(), 1/Prefs.getGuiScale());//todo improve to avoid the constant scaling
+        }
         // Note that fontMetrics.getStringBounds often underestimates the width (worst for italic fonts on Macs)
         // On the other hand, GlyphVector.getPixelBounds (returned by this.getStringBounds)
         // does not include the full character width of e.g. the '1' character, which would make
         // lists of right-justified numbers such as the y axis of plots look ugly.
         // Thus, the maximum of both methods is returned.
         Rectangle2D rect = getStringBounds(g, s);
-        return (int) Math.max(g.getFontMetrics().getStringBounds(s, g).getWidth(), rect.getX() + rect.getWidth());
+        int max = (int) Math.max(g.getFontMetrics().getStringBounds(s, g).getWidth(), rect.getX() + rect.getWidth());
+        if (scaled) {
+            g.scale(Prefs.getGuiScale(), Prefs.getGuiScale());
+        }
+        return max;
     }
 
     /**
@@ -941,42 +1334,49 @@ public class VectorPlotDrawing {
     /**
      * Fills space between polyline and y=0 with the current color (the secondary color of the plotObject)
      */
-    //todo make curves be curves
     void drawFloatPolyLineFilled(Graphics2D g, float[] xF, float[] yF, int len) {
         if (xF == null || len <= 1) {
             return;
         }
+
         g.setStroke(new BasicStroke(1));
         int y0 = plot.scaleYWithOverflow(0);
-        double x1, y1;
-        double x2 = plot.scaleXtoPxl(xF[0]);
-        double y2 = plot.scaleYtoPxl(yF[0]);
-        boolean isNaN1;
-        boolean isNaN2 = Float.isNaN(xF[0]) || Float.isNaN(yF[0]) || (plot.logXAxis && xF[0] <= 0) || (plot.logYAxis && yF[0] <= 0);
-        for (int i = 1; i < len; i++) {
-            isNaN1 = isNaN2;
-            isNaN2 = Float.isNaN(xF[i]) || Float.isNaN(yF[i]) || (plot.logXAxis && xF[i] <= 0) || (plot.logYAxis && yF[i] <= 0);
-            x1 = x2;
-            y1 = y2;
-            x2 = plot.scaleXtoPxl(xF[i]);
-            y2 = plot.scaleYtoPxl(yF[i]);
-            double left = (int) x1;
-            double right = (int) x2;
-            if (isNaN1 || isNaN2) continue;
-            if (left < plot.frame.x && right < plot.frame.x) continue; // ignore if all outside the plot area
-            if (left >= plot.frame.x + plot.frame.width && right >= plot.frame.x + plot.frame.width) continue;
-            if (left < plot.frame.x) left = plot.frame.x;
-            if (left >= plot.frame.x + plot.frame.width) left = plot.frame.x + plot.frame.width - 1;
-            if (right < plot.frame.x) right = plot.frame.x;
-            if (right >= plot.frame.x + plot.frame.width) right = plot.frame.x + plot.frame.width - 1;
-            if (left != right) {
-                for (double xi = Math.min(left, right); xi <= Math.max(left, right); xi++) {
-                    double yi = Math.round(y1 + (y2 - y1) * (xi - x1) / (x2 - x1));
-                    g.draw(new Line2D.Double(xi, y0, xi, yi));
+
+        Path2D.Double path = null;
+        var havePoint = false;
+        var lastPx = 0D;
+
+        for (int i = 0; i < len; i++) {
+            var isNaN = Float.isNaN(xF[i]) || Float.isNaN(yF[i]) || (plot.logXAxis && xF[i] <= 0) || (plot.logYAxis && yF[i] <= 0);
+            if (isNaN) {
+                if (havePoint && path != null) {
+                    path.closePath();
+                    g.fill(path);
+                    path = null;
+                    havePoint = false;
                 }
-            } else {
-                g.draw(new Line2D.Double(left, y0, left, y2));
+                continue;
             }
+
+            var px = plot.scaleXtoPxl(xF[i]);
+            var py = plot.scaleYtoPxl(yF[i]);
+
+            if (!havePoint) {
+                path = new Path2D.Double();
+                path.moveTo(px, y0);
+                path.lineTo(px, py);
+                havePoint = true;
+                lastPx = px;
+            } else {
+                path.lineTo(px, py);
+                lastPx = px;
+            }
+        }
+
+        if (havePoint && path != null) {
+            path.lineTo(lastPx, y0);
+            path.closePath();
+            g.fill(path);
         }
     }
 
@@ -987,38 +1387,35 @@ public class VectorPlotDrawing {
     // Adapted from Plot
     void fillShape(Graphics2D g, int shape, int x0, int y0, int size) {
         if (shape == DIAMOND) size = (int) (size * 1.21);
-        int r = plot.sc(size / 2f) - 1;
+        var xbase = x0 - plot.sc(size) / 2f;
+        var ybase = y0 - plot.sc(size) / 2f;
+        var xend = x0 + plot.sc(size) / 2f;
+        var yend = y0 + plot.sc(size) / 2f;
         switch (shape) {
             case BOX:
-                g.fill(new Rectangle2D.Double(x0 - r, y0 - r, x0 + r, y0 + r));
+                g.fill(new Rectangle2D.Double(xbase, ybase, plot.sc(size), plot.sc(size)));
                 break;
             case TRIANGLE:
-                int ybase = y0 - r - plot.sc(1);
-                int yend = y0 + r;
-                double halfWidth = plot.sc(size / 2f) + plot.sc(1) - 1;
-                double hwStep = halfWidth / (yend - ybase + 1);
-                for (int y = yend; y >= ybase; y--, halfWidth -= hwStep) {
-                    int dx = (int) (Math.round(halfWidth));
-                    for (int x = x0 - dx; x <= x0 + dx; x++) {
-                        drawDot(g, x, y);//todo not loop, not dots
-                    }
-                }
+                var triangle = new Path2D.Double();
+                triangle.moveTo(x0, ybase - plot.sc(1));
+                triangle.lineTo(xend + plot.sc(1), yend);
+                triangle.lineTo(xbase - plot.sc(1), yend);
+                triangle.closePath();
+                g.fill(triangle);
                 break;
             case DIAMOND:
-                ybase = y0 - r - plot.sc(1);
-                yend = y0 + r;
-                halfWidth = plot.sc(size / 2f) + plot.sc(1) - 1;
-                hwStep = halfWidth / (yend - ybase + 1);
-                for (int y = yend; y >= ybase; y--) {
-                    int dx = (int) (Math.round(halfWidth - (hwStep + 1) * Math.abs(y - y0)));
-                    for (int x = x0 - dx; x <= x0 + dx; x++) {
-                        drawDot(g, x, y);//todo not loop, not dots
-                    }
-                }
+                var diamond = new Path2D.Double();
+                diamond.moveTo(xbase, y0);
+                diamond.lineTo(x0, ybase);
+                diamond.lineTo(xend, y0);
+                diamond.lineTo(x0, yend);
+                diamond.closePath();
+                g.fill(diamond);
                 break;
             case CIRCLE:
             case CONNECTED_CIRCLES:
-                drawCircle(g, x0, y0, r, true);
+                int r0 = plot.sc(size) < 5.01 ? 3 : plot.sc(0.5f * size - 0.5f);
+                g.fill(new Ellipse2D.Double(x0 - r0, y0 - r0, 2 * r0, 2 * r0));
                 break;
         }
     }
@@ -1031,7 +1428,7 @@ public class VectorPlotDrawing {
         if (shape == DIAMOND) size = (int) (size * 1.21);
         g.setStroke(new BasicStroke(plot.sc(plotObject.getLineWidth())));
         var localStroke = g.getStroke();
-        if (plotObject.offScreenDisplacementArrowX()) {
+        if (plotObject.offScreenDisplacementArrowX() && !(shape == Plot.AIJ_V_MARKER || shape == Plot.AIJ_LEGEND_ENTRY)) {
             if (x < plot.frame.x) {
                 lineWidth = 2;
                 g.setStroke(new BasicStroke(plot.sc(2)));
@@ -1061,7 +1458,7 @@ public class VectorPlotDrawing {
                 x = plot.frame.x + plot.frame.width - 1;
             }
         }
-        if (plotObject.offScreenDisplacementArrowY()) {
+        if (plotObject.offScreenDisplacementArrowY() && !(shape == Plot.AIJ_V_MARKER || shape == Plot.AIJ_LEGEND_ENTRY)) {
             if (y < plot.frame.y) {
                 lineWidth = 2;
                 g.setStroke(new BasicStroke(plot.sc(2)));
@@ -1161,8 +1558,88 @@ public class VectorPlotDrawing {
                 g.draw(new Line2D.Double(xend + plot.sc(size / 2f), y - plot.sc(1), x, y - plot.sc(1)));
                 g.draw(new Line2D.Double(xend + plot.sc(size / 2f), y - plot.sc(1), x + plot.sc(1), ybase - plot.sc(size / 2f)));
                 break;
-            /*case CUSTOM://todo implemnt
-                if (plotObject.macroCode==null || frame==null)
+            case AIJ_LEGEND_ENTRY:
+                var clip = g.getClip();
+                g.setClip(null);
+                var split = plotObject.getLabel().split("\n", 2);
+                var label = split[1];
+                var data = split[0].split(";");
+                var marker = Integer.parseInt(data[0]);
+                var justification = Integer.parseInt(data[1]);
+                var stroke = g.getStroke();
+
+                // Draw Label
+                g.setStroke(new BasicStroke(plot.sc(1)));
+                setJustification(justification);
+                if (plotObject.getFont() != null) {
+                    g.setFont(plot.scFont(plotObject.getFont()));
+                }
+                var x0 = (int) leftMargin + (int) (plotObject.getxValues()[0] * frameWidth);
+                var y0 = (int) topMargin + (int) (plotObject.getyValues()[0] * frameHeight);
+                drawString(g, label, x0, y0);
+                g.setStroke(stroke);
+
+                // Draw Marker
+                var w = getStringWidth(g, label);
+                var cxx = cx;
+                if (justification == CENTER_JUSTIFY) {
+                    cxx -= w / 2;
+                } else if (justification == RIGHT_JUSTIFY) {
+                    cxx -= w;
+                }
+                if (marker != Plot.LINE) {
+                    var po = plotObject.clone();
+                    po.setShape(marker);
+                    drawShape(g, po, cxx - plot.sc(7), y0 - g.getFontMetrics().getHeight() / 2D, po.getMarkerSize(), -1);
+                } else {
+                    g.draw(new Line2D.Double(cxx - plot.sc(10), y0 - g.getFontMetrics().getHeight() / 2D,
+                            cxx - plot.sc(3), y0 - g.getFontMetrics().getHeight() / 2D));
+                }
+
+                g.setClip(clip);
+                break;
+            case AIJ_V_MARKER:
+                clip = g.getClip();
+                g.setClip(null);
+                setJustification(Plot.CENTER);
+                var lines = plotObject.getLabel().split("\n");
+                var stringBounds = getStringBounds(g, lines[0]);
+                var spacer = stringBounds.height;
+                var fm = g.getFontMetrics();
+                spacer = fm.getAscent();
+                var xLabelY = topMargin + frameHeight + fm.getHeight() * 5 / 4f + plot.sc(2);
+
+                if (lines.length == 3) {
+                    var xt = leftMargin + (plotObject.getxValues()[0] * frameWidth);
+                    var yt = topMargin + (plotObject.getyValues()[0] * frameHeight);
+
+                    drawString(g, lines[0], (int) xt, (int) (topMargin + frameHeight - plot.sc(1) - spacer * 3));
+                    drawString(g, lines[1], (int) xt, (int) (topMargin + frameHeight - plot.sc(2) - spacer));
+                    drawString(g, lines[2], (int) xt, (int) (xLabelY + spacer));
+                } else if (lines.length == 2) {
+                    var xt = leftMargin + (plotObject.getxValues()[0] * frameWidth);
+                    var yt = topMargin + (plotObject.getyValues()[0] * frameHeight);
+
+                    drawString(g, lines[0], (int) xt, (int) (topMargin + frameHeight - plot.sc(1) - spacer * 2));
+                    drawString(g, lines[1], (int) xt, (int) (topMargin + frameHeight - plot.sc(1)));
+                } else {
+                    var xt = leftMargin + (plotObject.getxValues()[0] * frameWidth);
+                    var yt = topMargin + (plotObject.getyValues()[0] * frameHeight) - (2 * spacer);
+
+                    for (int i = 0; i < lines.length; i++) {
+                        var l = lines[i];
+                        if (l.isEmpty()) {
+                            continue;
+                        }
+
+                        drawString(g, l, (int) xt, (int) (yt + i * spacer));
+                    }
+                }
+
+                g.setClip(clip);
+                break;
+            case CUSTOM://todo implemnt
+                /*if (plotObject.macroCode==null || frame==null)
                     break;
                 if (x<frame.x || y<frame.y || x>=frame.x+frame.width || y>=frame.y+frame.height)
                     break;
@@ -1191,8 +1668,9 @@ public class VectorPlotDrawing {
                     if ("[aborted]".equals(rtn))
                         plotObject.macroCode = null;
                 }
-                WindowManager.setTempCurrentImage(null);
-                break;*/
+                WindowManager.setTempCurrentImage(null);*/
+                g.drawString("Error: Custom symbols not yet implemented", (float) x, (float) y);
+                break;
             case CIRCLE, CONNECTED_CIRCLES:
                 int r = plot.sc(size) < 5.01 ? 3 : plot.sc(0.5f * size - 0.5f);//make circles circle again
                 g.draw(new Ellipse2D.Double(x - r, y - r, 2 * r, 2 * r));
@@ -1234,6 +1712,14 @@ public class VectorPlotDrawing {
         }
     }
 
+    public void redrawGrid(Graphics2D g) {
+        if (g != null) {
+            g.setColor(Color.black);
+            drawAxesTicksGridNumbers(g, plot.steps);
+            g.setColor(Color.black);
+        }
+    }
+
     /**
      * Sets the line width used by lineTo() and drawDot().
      */
@@ -1241,124 +1727,4 @@ public class VectorPlotDrawing {
         lineWidth = width;
         if (lineWidth < 1) lineWidth = 1;
     }
-
-    //todo See https://docs.oracle.com/javase/tutorial/2d/geometry/primitives.html
-
-    /*private static void drawPlotObject(IPlotObject plotObject) {//todo the rest of the shapes
-        if (plotObject.hasFlag(PlotObject.HIDDEN)) return;
-        g.setColor(plotObject.color);
-        ip.setLineWidth(sc(plotObject.lineWidth));
-        int type = plotObject.type;
-        switch (type) {
-            case PlotObject.SHAPES:
-                int iBoxWidth = 20;
-                g.setClip(plot.frame);
-                String shType = plotObject.shapeType.toLowerCase();
-                if (shType.contains("rectangles")) {
-                    int nShapes = plotObject.shapeData.size();
-
-                    for (int i = 0; i < nShapes; i++) {
-                        float[] corners = (float[])(plotObject.shapeData.get(i));
-                        int x1 = plot.scaleXtoPxl(corners[0]);
-                        int y1 = plot.scaleYtoPxl(corners[1]);
-                        int x2 = plot.scaleXtoPxl(corners[2]);
-                        int y2 = plot.scaleYtoPxl(corners[3]);
-
-                        ip.setLineWidth(sc(plotObject.lineWidth));
-                        int left = Math.min(x1, x2);
-                        int right = Math.max(x1, x2);
-                        int top = Math.min(y1, y2);
-                        int bottom = Math.max(y1, y2);
-
-                        Rectangle r1 = new Rectangle(left, top, right-left, bottom - top);
-                        Rectangle cBox = frame.intersection(r1);
-                        if (plotObject.color2 != null) {
-                            g.setColor(plotObject.color2);
-                            ip.fillRect(cBox.x, cBox.y, cBox.width, cBox.height);
-                        }
-                        g.setColor(plotObject.color);
-                        ip.drawRect(cBox.x, cBox.y, cBox.width, cBox.height);
-                    }
-                    g.setClip(null);
-                    break;
-                }
-                if (shType.equals("redraw_grid")) {
-                    ip.setLineWidth(sc(1));
-                    redrawGrid();
-                    g.setClip(null);
-                    break;
-                }
-                if (shType.contains("boxes")) {
-
-                    String[] parts = Tools.split(shType);
-                    for (int jj = 0; jj < parts.length; jj++) {
-                        String[] pairs = parts[jj].split("=");
-                        if ((pairs.length == 2) && pairs[0].equals("width")) {
-                            iBoxWidth = Integer.parseInt(pairs[1]);
-                        }
-                    }
-                    boolean horizontal = shType.contains("boxesx");
-                    int nShapes = plotObject.shapeData.size();
-                    int halfWidth = Math.round(sc(iBoxWidth / 2));
-                    for (int i = 0; i < nShapes; i++) {
-
-                        float[] coords = (float[])(plotObject.shapeData.get(i));
-
-                        if (!horizontal) {
-
-                            int x = plot.scaleXtoPxl(coords[0]);
-                            int y1 = plot.scaleYtoPxl(coords[1]);
-                            int y2 = plot.scaleYtoPxl(coords[2]);
-                            int y3 = plot.scaleYtoPxl(coords[3]);
-                            int y4 = plot.scaleYtoPxl(coords[4]);
-                            int y5 = plot.scaleYtoPxl(coords[5]);
-                            ip.setLineWidth(sc(plotObject.lineWidth));
-
-                            Rectangle r1 = new Rectangle(x - halfWidth, y4, halfWidth * 2, y2 - y4);
-                            Rectangle cBox = frame.intersection(r1);
-                            if (y1 != y2 || y4 != y5)//otherwise omit whiskers
-                            {
-                                g.drawLine(x, y1, x, y5);//whiskers
-                            }
-                            if (plotObject.color2 != null) {
-                                g.setColor(plotObject.color2);
-                                ip.fillRect(cBox.x, cBox.y, cBox.width, cBox.height);
-                            }
-                            g.setColor(plotObject.color);
-                            ip.drawRect(cBox.x, cBox.y, cBox.width, cBox.height);
-                            g.setClip(plot.frame);
-                            g.drawLine(x - halfWidth, y3, x + halfWidth - 1, y3);
-                        }
-
-                        if (horizontal) {
-
-                            int y = plot.scaleYtoPxl(coords[0]);
-                            int x1 = plot.scaleXtoPxl(coords[1]);
-                            int x2 = plot.scaleXtoPxl(coords[2]);
-                            int x3 = plot.scaleXtoPxl(coords[3]);
-                            int x4 = plot.scaleXtoPxl(coords[4]);
-                            int x5 = plot.scaleXtoPxl(coords[5]);
-                            ip.setLineWidth(sc(plotObject.lineWidth));
-                            if(x1 !=x2 || x4 != x5)//otherwise omit whiskers
-                                g.drawLine(x1, y, x5, y);//whiskers
-                            Rectangle r1 = new Rectangle(x2, y - halfWidth, x4 - x2, halfWidth * 2);
-                            Rectangle cBox = frame.intersection(r1);
-                            if (plotObject.color2 != null) {
-                                g.setColor(plotObject.color2);
-                                ip.fillRect(cBox.x, cBox.y, cBox.width, cBox.height);
-                            }
-                            g.setColor(plotObject.color);
-                            ip.drawRect(cBox.x, cBox.y, cBox.width, cBox.height);
-                            g.setClip(plot.frame);
-                            g.drawLine(x3, y - halfWidth, x3, y + halfWidth - 1);
-                        }
-                    }
-                    g.setClip(null);
-                    break;
-                }
-            case PlotObject.LEGEND:
-                drawLegend(plotObject, ip);
-                break;
-        }
-    }*/
 }

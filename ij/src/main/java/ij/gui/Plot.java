@@ -1,9 +1,38 @@
 package ij.gui;
 
-import ij.*;
+import static ij.process.ImageProcessor.CENTER_JUSTIFY;
+import static ij.process.ImageProcessor.RIGHT_JUSTIFY;
+
+import java.awt.Color;
+import java.awt.Dimension;
+import java.awt.Font;
+import java.awt.FontMetrics;
+import java.awt.Rectangle;
+import java.awt.Window;
+import java.awt.geom.Rectangle2D;
+import java.awt.image.BufferedImage;
+import java.io.ByteArrayOutputStream;
+import java.io.IOException;
+import java.io.InputStream;
+import java.io.ObjectInputStream;
+import java.io.ObjectOutputStream;
+import java.io.OutputStream;
+import java.io.Serializable;
+import java.lang.reflect.Method;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Locale;
+import java.util.Vector;
+
+import ij.IJ;
+import ij.ImagePlus;
+import ij.Prefs;
+import ij.Undo;
+import ij.WindowManager;
 import ij.astro.AstroImageJ;
 import ij.astro.accessors.IPlotObject;
 import ij.astro.accessors.IPlotProperties;
+import ij.astro.util.VectorPlotDrawing;
 import ij.macro.Interpreter;
 import ij.measure.Calibration;
 import ij.measure.Measurements;
@@ -15,15 +44,6 @@ import ij.process.ColorProcessor;
 import ij.process.ImageProcessor;
 import ij.util.FontUtil;
 import ij.util.Tools;
-
-import java.awt.*;
-import java.awt.geom.Rectangle2D;
-import java.io.*;
-import java.lang.reflect.Method;
-import java.util.ArrayList;
-import java.util.Arrays;
-import java.util.Locale;
-import java.util.Vector;
 
 /** This class creates an image that line graphs, scatter plots and plots of vector fields
  *	(arrows) can be drawn on and displayed.
@@ -37,6 +57,8 @@ import java.util.Vector;
  * @author Michael Schmid (axis grid/ticks, resizing/panning/changing range, high-resolution, serialization)
  */
 public class Plot implements Cloneable {
+	@AstroImageJ(reason = "Position labels vertically inline with the x label")
+	public static final String X_LABEL_V_ANCHOR = "$AIJ-xLabelVAnchor";
 
 	/** Text justification. */
 	public static final int LEFT=ImageProcessor.LEFT_JUSTIFY, CENTER=ImageProcessor.CENTER_JUSTIFY, RIGHT=ImageProcessor.RIGHT_JUSTIFY;
@@ -45,7 +67,8 @@ public class Plot implements Cloneable {
 	//These are saved in the flags of the PlotObject class; thus bits up to 0x0f are reserved
 	public static final int TOP_LEFT=0x90, TOP_RIGHT=0xA0, BOTTOM_LEFT=0xB0, BOTTOM_RIGHT=0xC0, AUTO_POSITION=0x80;
 	/** Masks out bits for legend positions; if all these bits are off, the legend is turned off */
-	static final int LEGEND_POSITION_MASK = 0xf0;
+	@AstroImageJ(reason = "Access widen for Vector Plot saving", modified = true)
+	public static final int LEGEND_POSITION_MASK = 0xf0;
 	/** Legend has its curves in bottom-to-top sequence (otherwise top to bottom) */
 	public static final int LEGEND_BOTTOM_UP = 0x100;
 	/** Legend erases background (otherwise transparent) */
@@ -93,6 +116,10 @@ public class Plot implements Cloneable {
 	public static final int ARROW_SOUTH_WEST = 19;
 	@AstroImageJ(reason = "Custom plot shape")
 	public static final int ARROW_NORTH_WEST = 20;
+	@AstroImageJ(reason = "Custom plot shape")
+	public static final int AIJ_LEGEND_ENTRY = 21;
+	@AstroImageJ(reason = "Custom plot shape")
+	public static final int AIJ_V_MARKER = 22;
 
 	/** Names for the shapes as an array */
 	@AstroImageJ(reason = "Custom plot shape", modified = true)
@@ -186,8 +213,10 @@ public class Plot implements Cloneable {
 	@AstroImageJ(reason = "Access widen for Vector Plot saving", modified = true)
 	public static final int MIN_Y_GRIDSPACING = 30;	//minimum distance between grid lines or ticks along y at plot height 0
 	private final double MIN_LOG_RATIO = 3;				//If max/min ratio is less than this, force linear axis even if log required. should be >2
-	private static final int LEGEND_PADDING = 4;		//pixels around legend text etc
-	private static final int LEGEND_LINELENGTH = 20;	//length of lines in legend
+	@AstroImageJ(reason = "Access widen for Vector Plot saving", modified = true)
+	public static final int LEGEND_PADDING = 4;		//pixels around legend text etc
+	@AstroImageJ(reason = "Access widen for Vector Plot saving", modified = true)
+	public static final int LEGEND_LINELENGTH = 20;	//length of lines in legend
 	private static final int USUALLY_ENLARGE = 1, ALWAYS_ENLARGE = 2; //enlargeRange settings
 	private static final double RELATIVE_ARROWHEAD_SIZE = 0.2; //arrow heads have 1/5 of vector length
 	private static final int MIN_ARROWHEAD_LENGTH = 3;
@@ -253,7 +282,8 @@ public class Plot implements Cloneable {
 	private int currentJustification = LEFT;
 	private boolean ignoreForce2Grid;               // after explicit setting of range (limits), ignore 'FORCE2GRID' flags
 	//private boolean snapToMinorGrid;  			// snap to grid when zooming to selection
-	private static double SEPARATED_BAR_WIDTH=0.5;  // for plots with separate bars (e.g. categories), fraction of space, 0.1-1.0
+	@AstroImageJ(reason = "Access widen for Vector Plot saving", modified = true)
+	public static double SEPARATED_BAR_WIDTH=0.5;  // for plots with separate bars (e.g. categories), fraction of space, 0.1-1.0
 	@AstroImageJ(reason = "Access widen for Vector Plot saving", modified = true)
 	public double[] steps;                                 // x & y interval between numbers, major ticks & grid lines, remembered for redrawing the grid
 	private int objectToReplace = -1;               // index in allPlotObjects, for replace
@@ -495,12 +525,18 @@ public class Plot implements Cloneable {
 	 * @see #setFrameSize(int,int)
 	 * @see #setWindowSize(int,int)
 	*/
+	@AstroImageJ(reason = "Scale plot size", modified = true)
 	public void setSize(int width, int height) {
 		if (ip != null && width == ip.getWidth() && height == ip.getHeight())
 			return;
 		Dimension minSize = getMinimumSize();
-		pp.width = Math.max(width, minSize.width);
-		pp.height = Math.max(height, minSize.height);
+		if (isAijPlot()) {
+			pp.width = (int) Math.round(Math.max(width, minSize.width) * Prefs.getGuiScale());
+			pp.height = (int) Math.round(Math.max(height, minSize.height) * Prefs.getGuiScale());
+		} else {
+			pp.width = Math.max(width, minSize.width);
+			pp.height = Math.max(height, minSize.height);
+		}
 		scale = 1.0f;
 		ip = null;
 		if (plotDrawn) updateImage();
@@ -1666,13 +1702,16 @@ public class Plot implements Cloneable {
 	 *  Does nothing if imp is unchanged and has the ImageProcessor of this plot.
 	 *  'imp' may be null to disconnect the plot from its ImagePlus.
 	 *	Does nothing for Plot Stacks. */
+	@AstroImageJ(reason = "Support vectorized plot drawing", modified = true)
 	public void setImagePlus(ImagePlus imp) {
 		if (imp != null && imp == this.imp && imp.getProcessor() == ip)
 			return;
 		if (stack != null)
 			return;
-		if (this.imp != null)
+		if (this.imp != null) {
 			this.imp.setProperty(PROPERTY_KEY, null);
+			this.imp.setProperty(VectorPlotDrawing.PROPERTY_KEY, null);
+		}
 		this.imp = imp;
 		if (imp != null) {
 			imp.setIgnoreGlobalCalibration(true);
@@ -1858,30 +1897,64 @@ public class Plot implements Cloneable {
 		return hiresImp;
 	}
 
+	@AstroImageJ(reason = "Support scalable plots")
+	public Plot duplicate() {
+		try {
+			var p = (Plot)clone();	//shallow clone, thus arrays&objects are not cloned, but they will be used only now
+			p.ip = null;
+			p.imp = null;
+			p.pp = pp.clone();
+            if (p.isAijPlot() && !VectorPlotDrawing.SCALED_PLOT.orElse(true)) {
+                p.pp.width = (int)(pp.width / Prefs.getGuiScale());
+				p.pp.height = (int)(pp.height / Prefs.getGuiScale());
+            }
+			if (!plotDrawn) p.getInitialMinAndMax();
+			//scaledPlot.setScale(scale);
+			//scaledPlot.setAntialiasedText(antialiasedText);
+			p.defaultMinMax = currentMinMax.clone();
+			p.plotDrawn = false;
+
+			return p;
+		} catch (Exception e) {
+			return null;
+		}
+	}
+
 	/** Releases the ImageProcessor and ImagePlus associated with the plot.
 	 *	May help garbage collection because some garbage collectors
 	 *	are said to be inefficient with circular references. */
+	@AstroImageJ(reason = "Support vectorized plot drawing", modified = true)
 	public void dispose() {
-		if (imp != null)
+		if (imp != null) {
 			imp.setProperty(PROPERTY_KEY, null);
+			imp.setProperty(VectorPlotDrawing.PROPERTY_KEY, null);
+		}
 		imp = null;
 		ip = null;
 	}
 
 	/** Converts pixels to calibrated coordinates. In contrast to the image calibration, also
 	 *	works with log axes and inverted x axes */
+	@AstroImageJ(reason = "Support scalable plots", modified = true)
 	public double descaleX(int x) {
 		if (xMin == xMax) return xMin;
-		double xv = (x-xBasePxl)/xScale + xMin;
+        if (isAijPlot()) {
+            x = (int) (x / Prefs.getGuiScale());
+        }
+        double xv = (x-xBasePxl)/xScale + xMin;
 		if (logXAxis) xv = Math.pow(10, xv);
 		return xv;
 	}
 
 	/** Converts pixels to calibrated coordinates. In contrast to the image calibration, also
 	 *	works with log axes */
+	@AstroImageJ(reason = "Support scalable plots", modified = true)
 	public double descaleY(int y) {
 		if (yMin == yMax) return yMin;
-		double yv = (yBasePxl-y)/yScale +yMin;
+        if (isAijPlot()) {
+            y = (int) (y / Prefs.getGuiScale());
+        }
+        double yv = (yBasePxl-y)/yScale +yMin;
 		if (logYAxis) yv = Math.pow(10, yv);
 		return yv;
 	}
@@ -2055,8 +2128,44 @@ public class Plot implements Cloneable {
 		plotDrawn = true;
 	}
 
+	@AstroImageJ(reason = "Support scaled plots")
+	public BufferedImage getBufferedImage(int width, int height) {
+        if (isAijPlot()) {
+			draw();
+
+			var buffer = new BufferedImage(width, height, BufferedImage.TYPE_INT_RGB);
+			var bufferGraphics = buffer.createGraphics();
+
+			if (VectorPlotDrawing.SCALED_PLOT.orElse(true)) {
+				bufferGraphics.scale(Prefs.getGuiScale(), Prefs.getGuiScale());
+			}
+
+			bufferGraphics.setColor(Color.WHITE);
+			bufferGraphics.fillRect(0, 0, width, height);
+
+			var vectorPlotDrawing = new VectorPlotDrawing(this);
+			vectorPlotDrawing.drawVectorForm(bufferGraphics);
+
+			bufferGraphics.dispose();
+
+			return buffer;
+        }
+
+		// MP has a race condition as setSize sets the ip to null, and it disposes of the plot as well
+		// So, make a copy of the plot and draw there
+		var ip = getProcessor();
+        if (ip == null) {
+            var p = duplicate();
+			p.draw();
+			ip = p.getProcessor();
+        }
+
+		return ip.getBufferedImage();
+	}
+
 	/** Creates the processor if not existing, clears the background and prepares
 	 *	it for plotting. Also called by the PlotWindow class to prepare the window. */
+	@AstroImageJ(reason = "Support scaling plots")
 	ImageProcessor getBlankProcessor() {
 		makeMarginValues();
 		//IJ.log("Plot.getBlankPr preferredH="+preferredPlotHeight+" pp.h="+pp.height);
@@ -2066,6 +2175,7 @@ public class Plot implements Cloneable {
 		}
 		frameWidth = pp.width - (leftMargin + rightMargin);
 		frameHeight = pp.height - (topMargin + bottomMargin);
+		scaleFrame();
 		boolean isColored = isColored();	//color, not grayscale required?
 		if (ip == null || pp.width != ip.getWidth() || pp.height != ip.getHeight() || (isColored != (ip instanceof ColorProcessor))) {
 			if (isColored) {
@@ -2095,6 +2205,17 @@ public class Plot implements Cloneable {
 		}
 		ip.setColor(Color.black);
 		return ip;
+	}
+
+	@AstroImageJ(reason = "Support scaling plots")
+	void scaleFrame() {
+		if (!VectorPlotDrawing.SCALED_PLOT.orElse(true) || !isAijPlot()) {
+			return;
+		}
+
+		var v = Prefs.getGuiScale();
+		frameWidth = (int) Math.round((pp.width / v) - (leftMargin + rightMargin));
+		frameHeight = (int) Math.round((pp.height / v) - (topMargin + bottomMargin));
 	}
 
 	/** Calculates the margin sizes and sets the class variables accordingly */
@@ -3111,7 +3232,11 @@ public class Plot implements Cloneable {
 		return n==Math.round(n);
 	}
 
-	@AstroImageJ(reason = "widen access; don't draw transparent objects", modified = true)
+	@AstroImageJ(reason = """
+            widen access
+            don't draw transparent objects
+            support drawing labels inline with x axis label
+            """, modified = true)
 	protected void drawPlotObject(PlotObject plotObject, ImageProcessor ip) {
 		//var plotObject = (PlotObject) iPlotObject;
 		//IJ.log("DRAWING type="+plotObject.type+" lineWidth="+plotObject.lineWidth+" shape="+plotObject.shape);
@@ -3333,7 +3458,23 @@ public class Plot implements Cloneable {
 					ip.setFont(scFont(plotObject.getFont()));
 				int xt = type==PlotObject.LABEL ? scaleX(plotObject.x) : leftMargin + (int)(plotObject.x*frameWidth);
 				int yt = type==PlotObject.LABEL ? scaleY(plotObject.y) : topMargin + (int)(plotObject.y*frameHeight);
-				ip.drawString(plotObject.label, xt, yt);
+				var label = plotObject.label;
+
+				if (label.startsWith(Plot.X_LABEL_V_ANCHOR)) {
+					label = label.substring(Plot.X_LABEL_V_ANCHOR.length());
+					var scFont = scFont(pp.getFrame().getFont());
+					var oFont = ip.getFont();
+					var xLabelFont = pp.getxLabel().getFont() == null ? scFont.deriveFont(12f) : scFont(pp.getxLabel().getFont()).deriveFont(12f);
+					ip.setFont(xLabelFont);
+					var fm = ip.getFontMetrics();
+					var y = topMargin + frameHeight + fm.getHeight() * 5 / 4f + sc(2);
+					y += simpleXAxis() ? -fm.getHeight() : sc(1);
+					y += fm.getHeight() + fm.getDescent();
+					yt = (int) (y);
+					ip.setFont(oFont);
+				}
+
+				ip.drawString(label, xt, yt);
 				break;
 			case PlotObject.LEGEND:
 				drawLegend(plotObject, ip);
@@ -3402,7 +3543,8 @@ public class Plot implements Cloneable {
 		int localLineWidth = lineWidth;
 		if (shape == DIAMOND)
 			size = (int)(size*1.21);
-		if (plotObject.offScreenDisplacementArrowControl.xEnable && pointIndex >= 0) {
+		if (plotObject.offScreenDisplacementArrowControl.xEnable && pointIndex >= 0 &&
+				!(shape == Plot.AIJ_V_MARKER || shape == Plot.AIJ_LEGEND_ENTRY)) {
 			if (x<frame.x) {
 				lineWidth = 2;
 				ip.setLineWidth(2);
@@ -3432,7 +3574,8 @@ public class Plot implements Cloneable {
 				x = frame.x+frame.width-1;
 			}
 		}
-		if (plotObject.offScreenDisplacementArrowControl.yEnable && pointIndex >= 0) {
+		if (plotObject.offScreenDisplacementArrowControl.yEnable && pointIndex >= 0 &&
+				!(shape == Plot.AIJ_V_MARKER || shape == Plot.AIJ_LEGEND_ENTRY)) {
 			if (y<frame.y) {
 				lineWidth = 2;
 				ip.setLineWidth(2);
@@ -3540,6 +3683,85 @@ public class Plot implements Cloneable {
 				ip.drawLine(x+sc(1),y-sc(1),x+sc(1),ybase-sc(size/2));
 				ip.drawLine(xend+sc(size/2), y-sc(1),x,y-sc(1));
 				ip.drawLine(xend+sc(size/2), y-sc(1), x+sc(1),ybase-sc(size/2));
+				break;
+			case AIJ_LEGEND_ENTRY:
+				ip.setClipRect(null);
+				var split = plotObject.getLabel().split("\n", 2);
+				var label = split[1];
+				var data = split[0].split(";");
+				var marker = Integer.parseInt(data[0]);
+				var justification = Integer.parseInt(data[1]);
+				var stroke = ip.getLineWidth();
+
+				// Draw Label
+				ip.setLineWidth(1);
+				ip.setJustification(justification);
+				if (plotObject.getFont() != null) {
+					ip.setFont(scFont(plotObject.getFont()));
+				}
+
+				var x0 = leftMargin + (int) (plotObject.getxValues()[0] * frameWidth);
+				var y0 = topMargin + (int) (plotObject.getyValues()[0] * frameHeight);
+				ip.drawString(label, x0, y0);
+				ip.setLineWidth(stroke);
+
+				// Draw Marker
+				var w = ip.getStringWidth(label);
+				var cxx = x0;
+				if (justification == CENTER_JUSTIFY) {
+					cxx -= w / 2;
+				} else if (justification == RIGHT_JUSTIFY) {
+					cxx -= w;
+				}
+				if (marker != Plot.LINE) {
+					var po = plotObject.clone();
+					po.setShape(marker);
+					drawShape(po, cxx - sc(7), (int)(y0 - ip.getFontMetrics().getHeight() / 2D), marker, po.getMarkerSize(), -1);
+				} else {
+					ip.drawLine(cxx - sc(10), (int) (y0 - ip.getFontMetrics().getHeight() / 2D),
+							cxx - sc(3), (int) (y0 - ip.getFontMetrics().getHeight() / 2D));
+				}
+
+				ip.setClipRect(frame);
+				break;
+			case AIJ_V_MARKER:
+				ip.setClipRect(null);
+				setJustification(Plot.CENTER);
+				var lines = plotObject.getLabel().split("\n");
+				var stringBounds = ip.getStringBounds(lines[0]);
+				var spacer = stringBounds.height;
+				var fm = ip.getFontMetrics();
+				spacer = fm.getAscent();
+				var xLabelY = topMargin + frameHeight + fm.getHeight() * 5 / 4f + sc(2);
+
+				if (lines.length == 3) {
+					var xt = leftMargin + (plotObject.getxValues()[0] * frameWidth);
+					var yt = topMargin + (plotObject.getyValues()[0] * frameHeight);
+
+					ip.drawString(lines[0], (int) xt, (int) (topMargin + frameHeight - sc(1) - spacer * 3));
+					ip.drawString(lines[1], (int) xt, (int) (topMargin + frameHeight - sc(2) - spacer));
+					ip.drawString(lines[2], (int) xt, (int) (xLabelY + spacer));
+				} else if (lines.length == 2) {
+					var xt = leftMargin + (plotObject.getxValues()[0] * frameWidth);
+					var yt = topMargin + (plotObject.getyValues()[0] * frameHeight);
+
+					ip.drawString(lines[0], (int) xt, (int) (topMargin + frameHeight - sc(1) - spacer * 2));
+					ip.drawString(lines[1], (int) xt, (int) (topMargin + frameHeight - sc(1)));
+				} else {
+					var xt = leftMargin + (plotObject.getxValues()[0] * frameWidth);
+					var yt = topMargin + (plotObject.getyValues()[0] * frameHeight) - (2 * spacer);
+
+					for (int i = 0; i < lines.length; i++) {
+						var l = lines[i];
+						if (l.isEmpty()) {
+							continue;
+						}
+
+						ip.drawString(l, (int) xt, (int) (yt + i * spacer));
+					}
+				}
+
+				ip.setClipRect(frame);
 				break;
 			case CUSTOM:
 				if (plotObject.macroCode==null || frame==null)
@@ -3749,7 +3971,8 @@ public class Plot implements Cloneable {
 	}
 
 	/** Returns only indexed and sorted plot objects, if at least one label is indexed like "1__MyLabel" */
-	Vector<PlotObject> getIndexedPlotObjects(){
+	@AstroImageJ(reason = "Access widen for Vector Plot saving", modified = true)
+	public Vector<PlotObject> getIndexedPlotObjects(){
 		boolean withIndex = false;
 		int len = allPlotObjects.size();
 		String[] labels = new String[len];
@@ -3922,10 +4145,11 @@ public class Plot implements Cloneable {
 	}
 
 	/** Returns the x, y coordinates at the cursor position or the nearest point as a String */
+	@AstroImageJ(reason = "Fix coordinate lookup for scaled coordinates", modified = true)
 	String getCoordinates(int x, int y) {
 		if (frame==null) return "";
 		String text = "";
-		if (!frame.contains(x, y))
+		if ((isAijPlot() ? !frame.contains(x / Prefs.getGuiScale(), y / Prefs.getGuiScale()) : !frame.contains(x, y)))
 			return text;
 		double xv = descaleX(x); // cursor location
 		double yv = descaleY(y);
@@ -4316,7 +4540,44 @@ public class Plot implements Cloneable {
 	public void changeFont(Font font) {
 		setFont(font);
 	}
-	
+
+	@AstroImageJ(reason = "Support scaled plots")
+    public boolean isAijPlot() {
+		if (pp.aijPlotType == AijPlotType.AUTOMATIC) {
+			return allPlotObjects.parallelStream()
+					.noneMatch(p -> p.shape == Plot.CUSTOM && p.type == PlotObject.XY_DATA);
+		}
+        return pp.aijPlotType != AijPlotType.BITMAPPED;
+    }
+
+	@AstroImageJ(reason = "Support scaled plots")
+	public boolean isAijAutomatic() {
+		return pp.aijPlotType == AijPlotType.AUTOMATIC;
+	}
+
+	@AstroImageJ(reason = "Support scaled plots")
+	public boolean isAijForced() {
+		return pp.aijPlotType == AijPlotType.AIJ_PLOT;
+	}
+
+	@AstroImageJ(reason = "Support scaled plots")
+    public void setAijPlot(boolean aijPlot) {
+        if (aijPlot) {
+            pp.aijPlotType = AijPlotType.AIJ_PLOT;
+        } else {
+			pp.aijPlotType = AijPlotType.BITMAPPED;
+		}
+    }
+
+	@AstroImageJ(reason = "Support scaled plots")
+	public void setAijPlotAutomatic() {
+		pp.aijPlotType = AijPlotType.AUTOMATIC;
+	}
+
+	@AstroImageJ(reason = "Support vector plot drawing")
+    public float getScale() {
+        return scale;
+    }
 }
 
 /** This class contains the properties of the plot, such as size, format, range, etc, except for the data+format (plot contents).
@@ -4338,6 +4599,8 @@ class PlotProperties implements Cloneable, Serializable, IPlotProperties {
 	double[] rangeMinMax;											//currentMinMax when writing, sets defaultMinMax when reading
 	boolean antialiasedText = true;
 	boolean isFrozen;							                    //modifications (size, range, contents) don't update the ImageProcessor
+	@AstroImageJ(reason = "Support scaled plots")
+	AijPlotType aijPlotType = AijPlotType.AUTOMATIC;
 
 	/** Returns an array of all PlotObjects defined as PlotProperties. Note that some may be null */
 	PlotObject[] getAllPlotObjects() {
@@ -4395,7 +4658,19 @@ class PlotProperties implements Cloneable, Serializable, IPlotProperties {
 		return legend;
 	}
 
+	@Override
+	@AstroImageJ(reason = "Implement IPlotProperties for Vector Plot saving")
+	public boolean antialiasedText() {
+		return antialiasedText;
+	}
 } // class PlotProperties
+
+@AstroImageJ(reason = "Support different scaled plots")
+enum AijPlotType {
+	AUTOMATIC,
+	AIJ_PLOT,
+	BITMAPPED,
+}
 
 /** This class contains the data and properties for displaying a curve, a set of arrows, a line or a label in a plot,
  *	as well as the legend, axis labels, and frame (including background and fonts of axis numbering).
@@ -4571,7 +4846,8 @@ class PlotObject implements Cloneable, Serializable, IPlotObject {
 				|| shape == Plot.CROSS || shape == Plot.DIAMOND || shape == Plot.DOT || shape == Plot.CONNECTED_CIRCLES
 				|| shape == Plot.CUSTOM || shape == Plot.ARROW_UP || shape == Plot.ARROW_DOWN ||
 				shape == Plot.ARROW_LEFT || shape == Plot.ARROW_RIGHT || shape == Plot.ARROW_NORTH_EAST ||
-				shape == Plot.ARROW_NORTH_WEST || shape == Plot.ARROW_SOUTH_EAST || shape == Plot.ARROW_SOUTH_WEST);
+				shape == Plot.ARROW_NORTH_WEST || shape == Plot.ARROW_SOUTH_EAST || shape == Plot.ARROW_SOUTH_WEST ||
+				shape == Plot.AIJ_V_MARKER || shape == Plot.AIJ_LEGEND_ENTRY);
 	}
 
 	/** Whether an XY_DATA object has markers that can be filled */

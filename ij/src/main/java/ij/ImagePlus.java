@@ -23,6 +23,7 @@ import java.util.Properties;
 import java.util.Vector;
 
 import ij.astro.AstroImageJ;
+import ij.astro.util.VectorPlotDrawing;
 import ij.gui.Arrow;
 import ij.gui.EllipseRoi;
 import ij.gui.FreehandRoi;
@@ -34,6 +35,7 @@ import ij.gui.Line;
 import ij.gui.OvalRoi;
 import ij.gui.Overlay;
 import ij.gui.Plot;
+import ij.gui.PlotVirtualStack;
 import ij.gui.PlotWindow;
 import ij.gui.PointRoi;
 import ij.gui.PolygonRoi;
@@ -90,6 +92,8 @@ a list ImageProcessors of same type and size.
 */
 
 public class ImagePlus implements ImageObserver, Measurements, Cloneable {
+	@AstroImageJ(reason = "Fix memory leak with virtual stacks and image listeners")
+	public static final ScopedValue<Boolean> TEMPORARY_IMAGE = ScopedValue.newInstance();
 
 	/** 8-bit grayscale (unsigned)*/
 	public static final int GRAY8 = 0;
@@ -513,11 +517,25 @@ public class ImagePlus implements ImageObserver, Measurements, Cloneable {
 	/** ImageCanvas.paint() calls this method when the
 	 * ImageProcessor has generated a new image.
 	*/
+	@AstroImageJ(reason = "Support for Vectorized and Scaled plots", modified = true)
 	public void updateImage() {
 		if (win==null) {
 			img = null;
 			return;
 		}
+
+		if (getProperty(VectorPlotDrawing.PROPERTY_KEY)!=null && win instanceof PlotWindow) {
+			Plot plot = (Plot)(getProperty(VectorPlotDrawing.PROPERTY_KEY));
+			img = plot.getBufferedImage(width, height);
+			return;
+		}
+
+		if (stack instanceof PlotVirtualStack plotVirtualStack) {
+			var plot = plotVirtualStack.getPlot(currentSlice);
+			img = plot.getBufferedImage(width, height);
+			return;
+		}
+
 		if (ip!=null)
 			img = ip.createImage();
 	}
@@ -664,7 +682,18 @@ public class ImagePlus implements ImageObserver, Measurements, Cloneable {
 	}
 
 	/** Returns this image as a AWT image. */
+	@AstroImageJ(reason = "Support for Vectorized and Scaled plots", modified = true)
 	public Image getImage() {
+		if (img==null && getProperty(VectorPlotDrawing.PROPERTY_KEY)!=null && win instanceof PlotWindow) {
+			Plot plot = (Plot)(getProperty(VectorPlotDrawing.PROPERTY_KEY));
+			img = plot.getBufferedImage(width, height);
+			return img;
+		}
+		if (img==null && stack instanceof PlotVirtualStack plotVirtualStack) {
+			var plot = plotVirtualStack.getPlot(currentSlice);
+			img = plot.getBufferedImage(width, height);
+			return img;
+		}
 		if (img==null && ip!=null)
 			img = ip.createImage();
 		return img;
@@ -673,7 +702,16 @@ public class ImagePlus implements ImageObserver, Measurements, Cloneable {
 	/** Returns a copy of this image as an 8-bit or RGB BufferedImage.
 	 * @see ij.process.ShortProcessor#get16BitBufferedImage
 	 */
+	@AstroImageJ(reason = "Support for Vectorized and Scaled plots", modified = true)
 	public BufferedImage getBufferedImage() {
+		if (getProperty(VectorPlotDrawing.PROPERTY_KEY)!=null) {
+			Plot plot = (Plot)(getProperty(VectorPlotDrawing.PROPERTY_KEY));
+			return plot.getBufferedImage(width, height);
+		}
+		if (stack instanceof PlotVirtualStack plotVirtualStack) {
+			var plot = plotVirtualStack.getPlot(currentSlice);
+			return plot.getBufferedImage(width, height);
+		}
 		if (isComposite())
 			return (new ColorProcessor(getImage())).getBufferedImage();
 		else
@@ -3114,8 +3152,9 @@ public class ImagePlus implements ImageObserver, Measurements, Cloneable {
 		Clipboard.copyToSystem(this);
 	}
 
+	@AstroImageJ(reason = "Fix memory leak with virtual stacks and image listeners", modified = true)
 	protected void notifyListeners(final int id) {
-		if (temporary)
+		if (temporary || TEMPORARY_IMAGE.orElse(false))
 			return;
 	    final ImagePlus imp = this;
 		EventQueue.invokeLater(new Runnable() {

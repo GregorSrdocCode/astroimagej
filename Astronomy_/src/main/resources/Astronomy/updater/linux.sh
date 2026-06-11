@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+set -euo pipefail
 
 # Get log file
 # Use XDG_STATE_HOME if available, else ~/.local/state
@@ -13,6 +14,7 @@ fi
 # Convention: ~/.local/state/astroimagej/logs/elevator.log
 elevator_log="$state_base/astroimagej/logs/elevator.log"
 rm -f "$elevator_log"
+mkdir -p "$(dirname "$elevator_log")"
 exec >>"$elevator_log" 2>&1
 
 echo "Starting AIJ elevator"
@@ -20,6 +22,7 @@ echo "Starting AIJ elevator"
 PID_TO_WAIT="$1"
 TGZ="$2"
 DEST="$3"
+MANIFEST="$4"
 
 # Wait for the given PID (if any) to exit, silently
 if [[ -n "$PID_TO_WAIT" ]]; then
@@ -31,15 +34,63 @@ if [[ -n "$PID_TO_WAIT" ]]; then
       break
     fi
     sleep 1
-    ((ELAPSED++))
+    ELAPSED=$((ELAPSED + 1))
   done
 fi
 
-echo "Creating install folder..."
-mkdir -p "$DEST"
+echo "Checking destination..."
+if [[ "$DEST" == "/" || -z "$DEST" ]]; then
+  echo "Refusing to update unsafe destination: '$DEST'" >&2
+  exit 1
+fi
+
+if [[ ! -x "$DEST/bin/AstroImageJ" || ! -f "$DEST/lib/app/ij.jar" ]]; then
+    echo "Refusing to update: '$DEST' does not appear to contain AstroImageJ"
+    exit 1
+fi
+
+DEST="$(realpath "$DEST")"
+
+echo "Removing files from previous installation..."
+
+if [[ ! -f "$MANIFEST" || ! -r "$MANIFEST" ]]; then
+  echo "Manifest not found: '$MANIFEST'"
+  echo "Skipping cleanup..."
+
+else
+
+  echo "Using manifest: '$MANIFEST'"
+  while IFS= read -r entry || [[ -n "$entry" ]]; do
+      # Skip empty lines
+      [[ -z "$entry" || "$entry" =~ ^[[:space:]]*$ ]] && continue
+
+      # Manifest must contain relative paths only
+      if [[ "$entry" = /* ]]; then
+          echo "Refusing absolute manifest entry: '$entry'" >&2
+          continue
+      fi
+
+      target="$(realpath -m "$DEST/$entry")"
+
+      case "$target" in
+          "$DEST"/*) ;;
+          *)
+              echo "Manifest entry escapes destination: '$entry'" >&2
+              continue
+              ;;
+      esac
+
+      if [ -f "$target" ]; then
+          echo "Removing file: '$target'"
+          rm -f -- "$target"
+      fi
+  done < "$MANIFEST"
+  find "$DEST" -mindepth 1 -depth -type d -empty -delete
+fi
+
 echo "Unpacking AIJ..."
 tar --strip-components=1 -xzf "$TGZ" -C "$DEST"
 
 # Rerun AIJ
 echo "Relaunching AIJ..."
-$DEST/bin/AstroImageJ
+exec "$DEST/bin/AstroImageJ"

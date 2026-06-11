@@ -3948,7 +3948,7 @@ public class AstroStackWindow extends StackWindow implements LayoutManager, Acti
         } else if (b == azimuthalAverageMenuItem) {
             IJ.runPlugIn("Azimuthal_Average", "imp");
         } else if (b == threeDSurfacePlotMenuItem) {
-            IJ.runPlugIn("Interactive_3D_Surface_Plot", "");
+            IJ.runPlugIn("plugins.volumetric.Interactive_3D_Surface_Plot", "");
         }
 
 
@@ -6967,6 +6967,7 @@ public class AstroStackWindow extends StackWindow implements LayoutManager, Acti
             if (((shiftKeyDown && controlKeyDown) || plotStackPixelValues.get()) && !stack.isVirtual()) {
                 if (stackPixelPlot == null) {
                     stackPixelPlot = new Plot("Pixel Values", "Slice", "Value");
+                    stackPixelPlot.setAijPlot(true);
                 }
                 stackPixelPlot.setXYLabels("Slice", "Value at (x= %,.2f, y= %,.2f)".formatted(imageX + Centroid.PIXELCENTER, (double) imp.getHeight() - imageY + Centroid.PIXELCENTER));
                 stackPixelPlot.allPlotObjects.clear();

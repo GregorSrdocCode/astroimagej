@@ -26,6 +26,7 @@ import java.util.Arrays;
 import java.util.HashSet;
 import java.util.Objects;
 import java.util.Set;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 import javax.swing.AbstractButton;
 import javax.swing.DefaultComboBoxModel;
@@ -420,14 +421,16 @@ public class GUI {
 
         if (comp instanceof JSlider jSlider) {
 			var table = jSlider.getLabelTable();
-            //noinspection unchecked
-            table.elements().asIterator().forEachRemaining(label -> {
-                if (label instanceof JLabel jLabel) {
-					scale(jLabel, factor, processed);
-                }
-			});
-			jSlider.setLabelTable(table);
-		}
+            if (table != null) {
+				//noinspection unchecked
+                table.elements().asIterator().forEachRemaining(label -> {
+                    if (label instanceof JLabel jLabel) {
+                        scale(jLabel, factor, processed);
+                    }
+                });
+                jSlider.setLabelTable(table);
+            }
+        }
 
 		if (comp instanceof JTable jTable) {
 			jTable.setRowHeight((int) ((jTable.getRowHeight() * factor)));
@@ -442,8 +445,10 @@ public class GUI {
             var border = jComponent.getBorder();
             if (border instanceof TitledBorder titledBorder) {
                 font = titledBorder.getTitleFont();
-				var newSize = (float) (font.getSize2D() * factor);
-				titledBorder.setTitleFont(font.deriveFont(newSize));
+                if (font != null && !scaledFont(font)) {
+					var newSize = (float) (font.getSize2D() * factor);
+					titledBorder.setTitleFont(font.deriveFont(newSize));
+                }
 
 				var b = titledBorder.getBorder();
 				if (b instanceof LineBorder lb) {
@@ -530,21 +535,43 @@ public class GUI {
 
 	private static boolean scaledFont(Font original) {
 		if (scaledMenu) {
-			var d = UIManager.getLookAndFeelDefaults();
-			for (var key : d.keySet()) {
-				if (key != null && key.toString().endsWith(".font")) {
-                    if (Objects.equals(d.get(key), original)) {
-						return true;
-					}
+			if (SwingUtilities.isEventDispatchThread()) {
+                return scaleFontInUIManager(original);
+			} else {
+				var result = new AtomicBoolean(false);
+
+				try {
+					SwingUtilities.invokeAndWait(() ->
+							result.set(scaleFontInUIManager(original)));
+				} catch (InterruptedException e) {
+					return false;
+				} catch (InvocationTargetException e) {
+					e.printStackTrace();
+					return false;
+				}
+
+				return result.get();
+			}
+		}
+
+		return false;
+	}
+
+	private static synchronized boolean scaleFontInUIManager(Font original) {
+		var d = UIManager.getLookAndFeelDefaults();
+		for (var key : d.keySet()) {
+			if (key != null && key.toString().endsWith(".font")) {
+				if (Objects.equals(d.get(key), original)) {
+					return true;
 				}
 			}
+		}
 
-			var ud = UIManager.getDefaults();
-			for (var key : ud.keySet()) {
-				if (key != null && key.toString().endsWith(".font")) {
-					if (Objects.equals(d.get(key), original)) {
-						return true;
-					}
+		var ud = UIManager.getDefaults();
+		for (var key : ud.keySet()) {
+			if (key != null && key.toString().endsWith(".font")) {
+				if (Objects.equals(d.get(key), original)) {
+					return true;
 				}
 			}
 		}

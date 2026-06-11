@@ -1,22 +1,50 @@
 package ij.gui;
 
-import ij.*;
-import ij.astro.AstroImageJ;
-import ij.astro.accessors.TransferablePlot;
-import ij.astro.util.PdfPlotOutput;
-import ij.io.SaveDialog;
-import ij.measure.ResultsTable;
-import ij.process.ColorProcessor;
-import ij.process.ImageProcessor;
-import ij.util.Tools;
-
-import java.awt.*;
+import java.awt.Button;
+import java.awt.CheckboxMenuItem;
+import java.awt.Color;
+import java.awt.Component;
+import java.awt.Dimension;
+import java.awt.Event;
+import java.awt.FlowLayout;
+import java.awt.Font;
+import java.awt.Insets;
+import java.awt.Label;
+import java.awt.LayoutManager;
+import java.awt.MenuItem;
+import java.awt.Panel;
+import java.awt.Point;
+import java.awt.PopupMenu;
+import java.awt.Window;
 import java.awt.datatransfer.Clipboard;
 import java.awt.datatransfer.ClipboardOwner;
 import java.awt.datatransfer.Transferable;
-import java.awt.event.*;
+import java.awt.event.ActionEvent;
+import java.awt.event.ActionListener;
+import java.awt.event.ItemEvent;
+import java.awt.event.ItemListener;
+import java.awt.event.MouseEvent;
+import java.awt.event.MouseWheelEvent;
+import java.awt.event.WindowEvent;
 import java.io.IOException;
+import java.util.Objects;
 import java.util.Properties;
+
+import ij.IJ;
+import ij.ImageListener;
+import ij.ImagePlus;
+import ij.Prefs;
+import ij.WindowManager;
+import ij.astro.AstroImageJ;
+import ij.astro.accessors.TransferablePlot;
+import ij.astro.util.PdfPlotOutput;
+import ij.astro.util.VectorPlotDrawing;
+import ij.io.SaveDialog;
+import ij.measure.ResultsTable;
+import ij.plugin.RoiScaler;
+import ij.process.ColorProcessor;
+import ij.process.ImageProcessor;
+import ij.util.Tools;
 
 /** This class implements the Analyze/Plot Profile command.
 * @author Michael Schmid
@@ -76,9 +104,15 @@ public class PlotWindow extends ImageWindow implements ActionListener, ItemListe
 	private static final int NO_GRID_LINES = 16;
 	private static final int NO_TICKS = 32;
 	private static String moreButtonLabel = "More "+'\u00bb';
-	@AstroImageJ(reason = "Convert data button to PNG button", modified = true)
-	private static String dataButtonLabel = "PNG";
+	private static String dataButtonLabel = "Data "+'\u00bb';
 
+	@AstroImageJ(reason = "Copy plot as PNG")
+	private Button pngButton = new Button("PNG");
+
+	@AstroImageJ(reason = "Copy plot as PDF")
+	private Button pdfButton = new Button("PDF");
+
+	@AstroImageJ(reason = "Copy plot")
 	private Button copy = new Button("Copy...");
 
 	@AstroImageJ(reason = "Save Seeing profile apertures")
@@ -234,12 +268,13 @@ public class PlotWindow extends ImageWindow implements ActionListener, ItemListe
 	}
 
 	/** Displays the plot. */
-	@AstroImageJ(reason = "Disable 'More' plot option by setting it invisiblel List -> PDF; add aps button", modified = true)
+	@AstroImageJ(reason = "Add new buttons, hide some buttons for MP and SP", modified = true)
 	public void draw() {
 		Panel bottomPanel = new Panel();
 		int hgap = IJ.isMacOSX()?1:5;
 
-		list = new Button(" PDF ");
+		list = new Button(" List ");
+		list.setVisible(isStandardIJPlot());
 		list.addActionListener(this);
 		if (getTitle().startsWith("Seeing Profile")) {
 			aps.addActionListener(this);
@@ -247,15 +282,21 @@ public class PlotWindow extends ImageWindow implements ActionListener, ItemListe
 		}
 		copy.addActionListener(this);
 		helpButton = new Button("Help");
+		helpButton.setVisible(!isStandardIJPlot());
 		bottomPanel.add(helpButton);
-		bottomPanel.add(copy);
 		bottomPanel.add(list);
+		bottomPanel.add(copy);
+		bottomPanel.add(pngButton);
+		pngButton.addActionListener(this);
+		bottomPanel.add(pdfButton);
+		pdfButton.addActionListener(this);
 		bottomPanel.setLayout(new FlowLayout(FlowLayout.RIGHT,hgap,0));
 		data = new Button(dataButtonLabel);
 		data.addActionListener(this);
+		data.setVisible(isStandardIJPlot());
 		bottomPanel.add(data);
 		more = new Button(moreButtonLabel);
-		more.setVisible(false);
+		more.setVisible(isStandardIJPlot());
 		more.addActionListener(this);
 		bottomPanel.add(more);
 		if (plot!=null && plot.getPlotMaker()!=null) {
@@ -378,12 +419,11 @@ public class PlotWindow extends ImageWindow implements ActionListener, ItemListe
 			SET_RANGE, PREV_RANGE, RESET_RANGE, FIT_RANGE, ZOOM_SELECTION, AXIS_OPTIONS, LEGEND, STYLE, RESET_PLOT};
 
 	/** Prepares and returns the popupMenu of the Data>> button */
-	@AstroImageJ(reason = "Convert COPY item to saving of aperture in case of seeing profile window", modified = true)
 	PopupMenu getDataPopupMenu() {
 		dataPopupMenu = new PopupMenu();
 		GUI.scalePopupMenu(dataPopupMenu);
 		menuItems[SAVE] = addPopupItem(dataPopupMenu, "Save Data...");
-		menuItems[COPY] = addPopupItem(dataPopupMenu, getTitle().startsWith("Seeing Profile")?"Save Aperture":"Copy...");
+		menuItems[COPY] = addPopupItem(dataPopupMenu, "Copy 1st Data Set");
 		menuItems[COPY_ALL] = addPopupItem(dataPopupMenu, "Copy All Data");
 		menuItems[LIST_SIMPLE] = addPopupItem(dataPopupMenu, "List (Simple Headings)");
 		dataPopupMenu.addSeparator();
@@ -412,6 +452,31 @@ public class PlotWindow extends ImageWindow implements ActionListener, ItemListe
 		menuItems[HI_RESOLUTION] = addPopupItem(morePopupMenu, "High-Resolution Plot...");
 		morePopupMenu.addSeparator();
 		menuItems[PROFILE_PLOT_OPTIONS] = addPopupItem(morePopupMenu, "Plot Defaults...");
+		morePopupMenu.addSeparator();
+		var forceVec = (CheckboxMenuItem)addPopupItem(morePopupMenu, "Force Vectorization", true);
+		var autoVec = (CheckboxMenuItem)addPopupItem(morePopupMenu, "Automatic Vectorization", true);
+		var noVec = (CheckboxMenuItem)addPopupItem(morePopupMenu, "Force Bitmapped", true);
+		forceVec.setState(plot.isAijForced());
+		autoVec.setState(plot.isAijAutomatic());
+		noVec.setState(!(plot.isAijForced() || plot.isAijAutomatic()));
+		forceVec.addItemListener(_ -> {
+			plot.setAijPlot(true);
+			autoVec.setState(false);
+			noVec.setState(false);
+			plot.updateImage();
+		});
+		autoVec.addItemListener(_ -> {
+			plot.setAijPlotAutomatic();
+			forceVec.setState(false);
+			noVec.setState(false);
+			plot.updateImage();
+		});
+		noVec.addItemListener(_ -> {
+			plot.setAijPlot(false);
+			forceVec.setState(false);
+			autoVec.setState(false);
+			plot.updateImage();
+		});
 		return morePopupMenu;
 	}
 
@@ -438,39 +503,46 @@ public class PlotWindow extends ImageWindow implements ActionListener, ItemListe
 		try {
 		Object b = e.getSource();
 		if (b==live)
-            toggleLivePlot();
-		else if (b==list) {
-			String fileName = getTitle().replace("Plot of ","").replace("Measurements in ", "");
+			toggleLivePlot();
+		else if (b==pdfButton) {
+			String fileName = getTitle().replace("Plot of ", "").replace("Measurements in ", "");
 			SaveDialog sf = new SaveDialog("Save plot as vector PDF", fileName, ".pdf");
 			if (sf.getDirectory() == null || sf.getFileName() == null) return;
-			PdfPlotOutput.savePlot(imp.getPlot(), sf.getDirectory()+sf.getFileName());
-			//showList(/*useLabels=*/true);
-		} else if (b==data) {
-			//enableDisableMenuItems();
-			//dataPopupMenu.show((Component)b, 1, 1);
+			PdfPlotOutput.savePlot(imp.getPlot(), sf.getDirectory() + sf.getFileName());
+		} else if (b==pngButton) {
 			String fileName = getTitle().replace("Plot of ","").replace("Measurements in ", "");
 			SaveDialog sf = new SaveDialog("Save plot as PNG",fileName, ".png");
 			if (sf.getDirectory() == null || sf.getFileName() == null) return;
-			IJ.runPlugIn(imp, "ij.plugin.PNG_Writer", sf.getDirectory()+sf.getFileName());
-		} else if (b==more) {
-			enableDisableMenuItems();
-			morePopupMenu.show((Component)b, 1, 1);
-		} else if (b==menuItems[SAVE]) {
-			String fileName = getTitle().replace("Plot of ","").replace("Measurements in ", "");
-			SaveDialog sf = new SaveDialog("Save plot as PNG",fileName, ".png");
-			if (sf.getDirectory() == null || sf.getFileName() == null) return;
-			IJ.runPlugIn(imp, "ij.plugin.PNG_Writer", sf.getDirectory()+sf.getFileName());
-		} else if (b==copy) {
-			copyToClipboard(true);
+			// Save unscaled plot
+			var image = imp;
+			if (plot.isAijPlot()) {
+				image = ScopedValue.where(VectorPlotDrawing.SCALED_PLOT, false).call(() -> {
+					var scaledPlot = plot.duplicate();
+					scaledPlot.draw();
+					return scaledPlot.getImagePlus();
+				});
+			}
+			IJ.runPlugIn(image, "ij.plugin.PNG_Writer", sf.getDirectory()+sf.getFileName());
 		} else if (b==aps) {
 			Prefs.set("aperture.radius",Prefs.get("seeingprofile.radius", 20));
 			Prefs.set("aperture.rback1",Prefs.get("seeingprofile.rback1", 30));
 			Prefs.set("aperture.rback2",Prefs.get("seeingprofile.rback2", 40));
 			Prefs.set("setaperture.aperturechanged",true);
 		}
+		else if (b==list)
+			showList(/*useLabels=*/true);
+		else if (b==data) {
+			enableDisableMenuItems();
+			dataPopupMenu.show((Component)b, 1, 1);
+		} else if (b==more) {
+			enableDisableMenuItems();
+			morePopupMenu.show((Component)b, 1, 1);
+		} else if (b==menuItems[SAVE]) {
+			saveAsText();
+		}
 		else if (b==menuItems[COPY])
 			copyToClipboard(false);
-		else if (b==menuItems[COPY_ALL])
+		else if (b==menuItems[COPY_ALL] || b==copy)
 			copyToClipboard(true);
 		else if (b==menuItems[LIST_SIMPLE])
 			showList(/*useLabels=*/false);
@@ -540,14 +612,21 @@ public class PlotWindow extends ImageWindow implements ActionListener, ItemListe
 	 *
 	 * @see ij.gui.ImageWindow#mouseMoved
 	 */
+	@AstroImageJ(reason = "Support scaled plots", modified = true)
 	public void mouseMoved(int x, int y) {
+		if (plot != null && plot.isAijPlot()) {
+			x = (int)(x * Prefs.getGuiScale());
+			y = (int)(y * Prefs.getGuiScale());
+		}
 		super.mouseMoved(x, y);
 		if (plot == null)
 			return;
 		String statusText = null; //coordinate readout, status or tooltip, will be shown in coordinate&status line
 
 		//arrows and other symbols for modifying the plot range
-		if (x < plot.leftMargin || y > plot.topMargin + plot.frameHeight) {
+		var xBound = plot.frameWidth * (plot.isAijPlot() ? Prefs.getGuiScale() : 1.0);
+		var yBound = plot.frameHeight * (plot.isAijPlot() ? Prefs.getGuiScale() : 1.0);
+		if (x < xBound || y > plot.topMargin + yBound) {
 			if (!rangeArrowsVisible && !plot.isFrozen())
 				showRangeArrows();
 			if (activeRangeArrow < 0)       //mouse is not on one of the symbols, ignore (nothing to display)
@@ -596,6 +675,7 @@ public class PlotWindow extends ImageWindow implements ActionListener, ItemListe
 	}
 
 	/** Mouse wheel: zooms when shift or ctrl is pressed, scrolls in x if space bar down, in y otherwise. */
+	@AstroImageJ(reason = "Support scaled plots", modified = true)
 	public synchronized void mouseWheelMoved(MouseWheelEvent e) {
 		if (plot.isFrozen() || !(ic instanceof PlotCanvas)) {	   //frozen plots are like normal images
 			super.mouseWheelMoved(e);
@@ -603,9 +683,11 @@ public class PlotWindow extends ImageWindow implements ActionListener, ItemListe
 		}
 		int rotation = e.getWheelRotation();
 		int amount = e.getScrollAmount();
-		if (e.getX() < plot.leftMargin || e.getX() > plot.leftMargin + plot.frameWidth)//n__
+		var xBound = plot.frameWidth * (plot.isAijPlot() ? Prefs.getGuiScale() : 1.0);
+		var yBound = plot.frameHeight * (plot.isAijPlot() ? Prefs.getGuiScale() : 1.0);
+		if (e.getX() < plot.leftMargin || e.getX() > plot.leftMargin + xBound)//n__
 			return;
-		if (e.getY() < plot.topMargin || e.getY() > plot.topMargin + plot.frameHeight)
+		if (e.getY() < plot.topMargin || e.getY() > plot.topMargin + yBound)
 			return;
 		boolean ctrl = (e.getModifiers()&Event.CTRL_MASK)!=0;
 		if (amount<1) amount=1;
@@ -627,6 +709,7 @@ public class PlotWindow extends ImageWindow implements ActionListener, ItemListe
      * Creates an overlay with triangular buttons and othr symbols for changing the axis range
      * limits and shows it
      */
+	@AstroImageJ(reason = "Support scaled plots", modified = true)
     void showRangeArrows() {
         if (imp == null)
             return;
@@ -634,6 +717,9 @@ public class PlotWindow extends ImageWindow implements ActionListener, ItemListe
         rangeArrowRois = new Roi[4 * 2 + 2 + 4 + 2]; //4 arrows per axis, + 'Reset' and 'Fit All' icons, + 4 numerical input boxes + 2 axes
         int i = 0;
         int height = imp.getHeight();
+		if (plot.isAijPlot()) {
+			height = (int) (height / Prefs.getGuiScale());
+		}
         int arrowH = plot.topMargin < 14 ? 6 : 8; //height of arrows and distance between them; base is twice that value
         float[] yP = new float[]{height - arrowH / 2, height - 3 * arrowH / 2, height - 5 * arrowH / 2 - 0.1f};
 
@@ -671,11 +757,17 @@ public class PlotWindow extends ImageWindow implements ActionListener, ItemListe
         rangeArrowRois[15] = new Roi(leftMargin-2*arrowH-2, topMargin,  // area to click for y axis options
 				2*arrowH, bottomMargin - topMargin + 1);
 
+		for (int i1 = 0; plot.isAijPlot() && i1 < rangeArrowRois.length; i1++) {
+			var isRect = rangeArrowRois[i1].type == Roi.RECTANGLE;
+			rangeArrowRois[i1] = RoiScaler.scale(rangeArrowRois[i1], Prefs.getGuiScale(), Prefs.getGuiScale(), false);
+			rangeArrowRois[i1].setProperty("aijScaledRect", "" + isRect);
+		}
+
         Overlay ovly = imp.getOverlay();
         if (ovly == null)
             ovly = new Overlay();
         for (Roi roi : rangeArrowRois) {
-            if (roi instanceof PolygonRoi)
+            if (roi instanceof PolygonRoi && !Objects.equals(roi.getProperty("aijScaledRect"), "true"))
                    roi.setFillColor(inactiveRangeArrowColor);
 			else if (roi instanceof TextRoi) {
                 roi.setStrokeColor(Color.WHITE);
@@ -966,6 +1058,10 @@ public class PlotWindow extends ImageWindow implements ActionListener, ItemListe
 	/** Returns the Plot associated with this PlotWindow. */
 	public Plot getPlot() {
 		return plot;
+	}
+
+	boolean isStandardIJPlot() {
+		return !(getTitle().startsWith("Seeing Profile") || plot.isAijForced());
 	}
 
 	/** Freezes the active plot window, so the image does not get redrawn for zooming,

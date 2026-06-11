@@ -5,7 +5,6 @@ import java.awt.Cursor;
 import java.awt.Desktop;
 import java.awt.Dimension;
 import java.awt.Font;
-import java.awt.FontMetrics;
 import java.awt.Frame;
 import java.awt.Graphics;
 import java.awt.GridBagConstraints;
@@ -151,6 +150,7 @@ import ij.astro.types.Pair;
 import ij.astro.util.FileAssociationHandler;
 import ij.astro.util.PdfPlotOutput;
 import ij.astro.util.UIHelper;
+import ij.astro.util.VectorPlotDrawing;
 import ij.gui.GUI;
 import ij.gui.GenericDialog;
 import ij.gui.ImageCanvas;
@@ -1281,6 +1281,7 @@ public class MultiPlot_ implements PlugIn, KeyListener {
             tableName = table.shortTitle();
             measurementsWindow = MeasurementTable.getMeasurementsWindow(MeasurementTable.longerName(tableName));
             dataSectionBorder.setTitle("Data (" + MeasurementTable.shorterName(tableName) + ")");
+            dataSectionBorder.setTitleFont(b12);
             unfilteredColumns = table.getColumnHeadings().split("\t");
             if (unfilteredColumns.length == 0) {
                 IJ.showMessage("No data columns to plot.");
@@ -1455,7 +1456,7 @@ public class MultiPlot_ implements PlugIn, KeyListener {
             if (refStarFrame != null) {
                 refStarPanelWasShowing = refStarFrame.isVisible();
                 refStarScrollPane.removeAll();
-                rebuildRefStarJPanel();
+                relayoutRefStarPanel();
             } else {
                 refStarPanelWasShowing = false;
             }
@@ -1503,6 +1504,7 @@ public class MultiPlot_ implements PlugIn, KeyListener {
             plotImage = WindowManager.getImage("Plot of " + tableName);
             if (plotImage != null) {
                 plot = new Plot("Plot of " + tableName, xlab, ylab, plotOptions);
+                plot.setAijPlot(true);
                 plot.setSize(plotSizeX, plotSizeY);
                 plot.setLimits(plotMinX, plotMaxX, plotMinY, plotMaxY);
                 plot.setJustification(Plot.CENTER);
@@ -1517,6 +1519,9 @@ public class MultiPlot_ implements PlugIn, KeyListener {
                 plot.draw();
                 ImageProcessor ip = plot.getProcessor();
                 plotImage.setProcessor("Plot of " + tableName, ip);
+                if (plotImage.getCanvas() instanceof PlotCanvas plotCanvas) {
+                    plotCanvas.setPlot(plot);
+                }
             }
         } else {
             IJ.showStatus("No plot to clear");
@@ -1672,6 +1677,7 @@ public class MultiPlot_ implements PlugIn, KeyListener {
 
 
         plot = new Plot("Plot of " + tableName, xlab, ylab, plotOptions);
+        plot.setAijPlot(true);
         plot.setOffScreenDisplacementArrowControl(drawOffscreenDisplacementArrowsX.get(), drawOffscreenDisplacementArrowsY.get());
         plot.setSize(plotSizeX, plotSizeY);
         pltMinX = xPlotMin - 5. * dx;
@@ -1938,8 +1944,7 @@ public class MultiPlot_ implements PlugIn, KeyListener {
                 if (detrendFitIndex[curve] == 9 && useTransitFit[curve] && showResidual[curve] && showLResidual[curve] && residualShift[curve] > 0.0) {
                     llab = new StringBuilder(ylabel[curve] + " Residuals");
                     llab.append(" (RMS=").append(sigma[curve] >= 1.0 ? uptoThreePlaces.format(sigma[curve]) : uptoFivePlaces.format(sigma[curve])).append(") (chi^2/dof=").append(uptoTwoPlaces.format(chi2dof[curve])).append(")");
-                    if (drawLegendSymbol(residualSymbol[curve], residualSymbol[curve] == Plot.DOT ? 4 : 1, residualColor[curve], legPosY, llab.toString())) {
-                        plot.addLabel(legendPosX, legPosY, llab.toString());
+                    if (drawLegendEntry(residualSymbol[curve], residualSymbol[curve] == Plot.DOT ? 4 : 1, residualColor[curve], legPosY, llab.toString())) {
                         legPosY += 18. / plotSizeY;
                     }
                 }
@@ -2069,8 +2074,7 @@ public class MultiPlot_ implements PlugIn, KeyListener {
                 }
 
                 if (useColumnName[curve] || useLegend[curve]) {
-                    if (drawLegendSymbol(marker[curve], (marker[curve] == Plot.DOT) ? 4 : 1, color[curve], legPosY, llab.toString())) {
-                        plot.addLabel(legendPosX, legPosY, llab.toString());
+                    if (drawLegendEntry(marker[curve], (marker[curve] == Plot.DOT) ? 4 : 1, color[curve], legPosY, llab.toString())) {
                         legPosY += 18. / plotSizeY;
                     }
                 }
@@ -2087,8 +2091,7 @@ public class MultiPlot_ implements PlugIn, KeyListener {
                     llab.append(", ").append(lockToCenter[curve][3] ? "[" : "").append("Tc=").append(uptoSixPlaces.format(bestFit[curve][3])).append(lockToCenter[curve][3] ? "]" : "");
                     llab.append(", ").append(lockToCenter[curve][5] ? "[" : "").append("u1=").append(uptoTwoPlaces.format(bestFit[curve][5])).append(lockToCenter[curve][5] ? "]" : "");
                     llab.append(", ").append(lockToCenter[curve][6] ? "[" : "").append("u2=").append(uptoTwoPlaces.format(bestFit[curve][6])).append(lockToCenter[curve][6] ? "]" : "").append(")");
-                    if (drawLegendSymbol(Plot.LINE, modelLineWidth[curve] + (showErrors[curve] && (hasErrors[curve] || hasOpErrors[curve]) ? 1 : 0), modelColor[curve], legPosY, llab.toString())) {
-                        plot.addLabel(legendPosX, legPosY, llab.toString());
+                    if (drawLegendEntry(Plot.LINE, modelLineWidth[curve] + (showErrors[curve] && (hasErrors[curve] || hasOpErrors[curve]) ? 1 : 0), modelColor[curve], legPosY, llab.toString())) {
                         legPosY += 18. / plotSizeY;
                     }
                 }
@@ -2096,8 +2099,7 @@ public class MultiPlot_ implements PlugIn, KeyListener {
                 if (detrendFitIndex[curve] == 9 && useTransitFit[curve] && showResidual[curve] && showLResidual[curve] && residualShift[curve] <= 0.0) {
                     llab = new StringBuilder(ylabel[curve] + " Residuals");
                     llab.append(" (RMS=").append(sigma[curve] >= 1.0 ? uptoThreePlaces.format(sigma[curve]) : uptoFivePlaces.format(sigma[curve])).append(") (chi^2/dof=").append(uptoTwoPlaces.format(chi2dof[curve])).append(")");
-                    if (drawLegendSymbol(residualSymbol[curve], residualSymbol[curve] == Plot.DOT ? 4 : 1, residualColor[curve], legPosY, llab.toString())) {
-                        plot.addLabel(legendPosX, legPosY, llab.toString());
+                    if (drawLegendEntry(residualSymbol[curve], residualSymbol[curve] == Plot.DOT ? 4 : 1, residualColor[curve], legPosY, llab.toString())) {
                         legPosY += 18. / plotSizeY;
                     }
                 }
@@ -2243,15 +2245,13 @@ public class MultiPlot_ implements PlugIn, KeyListener {
                 plot.drawLine(dMarker2Value, preDmark2Ref - dashLength * dashCount, dMarker2Value, preDmark2Ref - dashLength * (dashCount + 1));
             }
             plot.setJustification(Plot.CENTER);
-            plot.addLabel((dMarker2Value - plotMinX) / (plotMaxX - plotMinX), 1 - 16.0 / plotSizeY, "Left");
-            plot.addLabel((dMarker2Value - plotMinX) / (plotMaxX - plotMinX), 1 + 4.0 / plotSizeY, threePlaces.format(dMarker2Value));
+            plot.addPoints(new float[]{(float) ((dMarker2Value - plotMinX) / (plotMaxX - plotMinX))}, new float[]{1}, null, Plot.AIJ_V_MARKER, "Left" + "\n" + threePlaces.format(dMarker2Value));
 
             numDashes = -10 + (postDMarker3Ref - plotMinY) / dashLength;     //plot dMarker3
             for (int dashCount = 0; dashCount < numDashes; dashCount += 2) {
                 plot.drawLine(dMarker3Value, postDMarker3Ref - dashLength * dashCount, dMarker3Value, postDMarker3Ref - dashLength * (dashCount + 1));
             }
-            plot.addLabel((dMarker3Value - plotMinX) / (plotMaxX - plotMinX), 1 - 16.0 / plotSizeY, "Right");
-            plot.addLabel((dMarker3Value - plotMinX) / (plotMaxX - plotMinX), 1 + 4.0 / plotSizeY, threePlaces.format(dMarker3Value));
+            plot.addPoints(new float[]{(float) ((dMarker3Value - plotMinX) / (plotMaxX - plotMinX))}, new float[]{1}, null, Plot.AIJ_V_MARKER, "Right" + "\n" + threePlaces.format(dMarker3Value));
 
             if (useDMarker1) { //plot dMarker1
                 if (nBefore1 + nAfter1 > 0) {
@@ -2262,9 +2262,7 @@ public class MultiPlot_ implements PlugIn, KeyListener {
                 for (int dashCount = 0; dashCount < numDashes; dashCount += 2) {
                     plot.drawLine(dMarker1Value, preDmark1Ref - dashLength * dashCount, dMarker1Value, preDmark1Ref - dashLength * (dashCount + 1));
                 }
-                plot.addLabel((dMarker1Value - plotMinX) / (plotMaxX - plotMinX), 1 - 25.0 / plotSizeY, "Left");
-                plot.addLabel((dMarker1Value - plotMinX) / (plotMaxX - plotMinX), 1 - 7.0 / plotSizeY, "Trim");
-                plot.addLabel((dMarker1Value - plotMinX) / (plotMaxX - plotMinX), 1 + 33.0 / plotSizeY, threePlaces.format(dMarker1Value));
+                plot.addPoints(new float[]{(float) ((dMarker1Value - plotMinX) / (plotMaxX - plotMinX))}, new float[]{1}, null, Plot.AIJ_V_MARKER, "Left" + "\n" + "Trim" + "\n" + threePlaces.format(dMarker1Value));
             }
             if (useDMarker4) { //plot dMarker4
                 if (nBefore4 + nAfter4 > 0) {
@@ -2275,9 +2273,7 @@ public class MultiPlot_ implements PlugIn, KeyListener {
                 for (int dashCount = 0; dashCount < numDashes; dashCount += 2) {
                     plot.drawLine(dMarker4Value, postDMarker4Ref - dashLength * dashCount, dMarker4Value, postDMarker4Ref - dashLength * (dashCount + 1));
                 }
-                plot.addLabel((dMarker4Value - plotMinX) / (plotMaxX - plotMinX), 1 - 25.0 / plotSizeY, "Right");
-                plot.addLabel((dMarker4Value - plotMinX) / (plotMaxX - plotMinX), 1 - 7.0 / plotSizeY, "Trim");
-                plot.addLabel((dMarker4Value - plotMinX) / (plotMaxX - plotMinX), 1 + 33.0 / plotSizeY, threePlaces.format(dMarker4Value));
+                plot.addPoints(new float[]{(float) ((dMarker4Value - plotMinX) / (plotMaxX - plotMinX))}, new float[]{1}, null, Plot.AIJ_V_MARKER, "Right" + "\n" + "Trim" + "\n" + threePlaces.format(dMarker4Value));
             }
         }
         if (showMFMarkers) drawVMarker(mfMarker1Value, "Meridian", "Flip", new Color(84, 201, 245));
@@ -2305,7 +2301,7 @@ public class MultiPlot_ implements PlugIn, KeyListener {
             var version = "AIJ " + IJ.getAstroVersion().split("[+]")[0];
             var pWid = plot.getSize().getWidth();
             var h = plot.getSize().getHeight();
-            plot.addLabel(1, (h + 43)/h, version);
+            plot.addLabel(1 - 10/pWid, (h + 43)/h, Plot.X_LABEL_V_ANCHOR + version);
         }
 
         if (showCleanedCount.get()) {
@@ -2314,7 +2310,7 @@ public class MultiPlot_ implements PlugIn, KeyListener {
             var removedCount = FitOptimization.cleanedCount() + "/" + FitOptimization.oldestCleanedTableCount() + " Removed";
             var pWid = plot.getSize().getWidth();
             var h = plot.getSize().getHeight();
-            plot.addLabel(10/pWid, (h + 43)/h, removedCount);
+            plot.addLabel(10/pWid, (h + 43)/h, Plot.X_LABEL_V_ANCHOR + removedCount);
         }
 
         if (plotImage == null) {
@@ -2332,9 +2328,14 @@ public class MultiPlot_ implements PlugIn, KeyListener {
             plotWindow.addComponentListener(new ComponentAdapter() {
                 @Override
                 public void componentResized(ComponentEvent e) {
+                    if (suppressDataUpdate) {
+                        return;
+                    }
                     updatePlotEnabled = false;
-                    var y = plot.getSize().height;
-                    var x = plot.getSize().width;
+
+                    var y = (int) (plot.getSize().height / Prefs.getGuiScale());
+                    var x = (int) (plot.getSize().width / Prefs.getGuiScale());
+
                     if (plotSizeX != x) {
                         plotwidthspinner.setValue(x);
                     }
@@ -2416,8 +2417,10 @@ public class MultiPlot_ implements PlugIn, KeyListener {
             plot.setFrozen(false);
         } else {
             plotWindow = (PlotWindow) plotImage.getWindow();
-            ImageProcessor ip = plot.getProcessor();
-            plotImage.setProcessor("Plot of " + tableName, ip);
+            ScopedValue.where(VectorPlotDrawing.SCALED_PLOT, plot.isAijPlot()).run(() -> {
+                ImageProcessor ip = plot.getProcessor();
+                plotImage.setProcessor("Plot of " + tableName, ip);
+            });
             plotImageCanvas = plotImage.getCanvas();
             plotImageCanvas.setCursor(Cursor.getPredefinedCursor(Cursor.DEFAULT_CURSOR));
             ((PlotCanvas) plotImageCanvas).setZoomed(() -> zoomY != 0 || zoomX != 0 || draggableShape.isPlotScaleDirty());
@@ -4745,49 +4748,20 @@ public class MultiPlot_ implements PlugIn, KeyListener {
             plot.drawLine(vMarkerValue, preVmarkRef - dashLength * dashCount, vMarkerValue, preVmarkRef - dashLength * (dashCount + 1));
         }
         plot.setJustification(Plot.CENTER);
-        plot.addLabel((vMarkerValue - plotMinX) / (plotMaxX - plotMinX), 1 - 25.0 / plotSizeY, vMarkerTopText);
-        plot.addLabel((vMarkerValue - plotMinX) / (plotMaxX - plotMinX), 1 - 7.0 / plotSizeY, vMarkerBotText);
-        plot.addLabel((vMarkerValue - plotMinX) / (plotMaxX - plotMinX), 1 + 33.0 / plotSizeY, threePlaces.format(vMarkerValue));
+        plot.addPoints(new float[]{(float) ((vMarkerValue - plotMinX) / (plotMaxX - plotMinX))}, new float[]{1}, null, Plot.AIJ_V_MARKER, vMarkerTopText + "\n" + vMarkerBotText + "\n" + threePlaces.format(vMarkerValue));
     }
 
-    static boolean drawLegendSymbol(int marker, int width, Color color, double legPosY, String llab) {
+    static boolean drawLegendEntry(int marker, int width, Color color, double legPosY, String llab) {
         if (color.getAlpha() == 0) return false;
-        double xShift = 6.0;
-        double yShift = 6.0;
-        Font font = new Font("Dialog", Font.PLAIN, 12);
-        int h = 0;
-        int w = 0;
-        if (mainpanel != null) {
-            Graphics g = mainpanel.getGraphics();
-            FontMetrics metrics = g.getFontMetrics(font);
-            h = metrics.getHeight();
-            w = (int) (metrics.stringWidth(llab) * 1.1) + 18;
-        }
         plot.setLineWidth(width);
-        if (legendRight) { xShift += w; } else if (!legendLeft) xShift += w / 2f;
         plot.setColor(color);
-        if (marker == Plot.DOT) {
-            xShift += 2;
-            yShift += 2;
-        } else if (marker == Plot.LINE) {
-            xShift += 7;
-            yShift += 2;
-        } else {
-            xShift += 3;
-            yShift += 3;
-        }
-        Dimension s = plot.getSize();
-        double x = plotMinX + (plotMaxX - plotMinX) * (legendPosX - xShift / (s.getWidth()));
-        double y = plotMinY + (plotMaxY - plotMinY) * (1 - legPosY + yShift / (s.getHeight()));
-        double[] xx = {x};
-        double[] yy = {y};
-        plot.setOffScreenDisplacementArrowControl(false, false);
-        if (marker != Plot.LINE) {
-            plot.addPoints(xx, yy, marker);
-        } else {
-            plot.drawLine(x, y, x + (plotMaxX - plotMinX) * 6.0 / (s.getWidth()), y);
-        }
-        plot.setOffScreenDisplacementArrowControl(drawOffscreenDisplacementArrowsX.get(),drawOffscreenDisplacementArrowsY.get());
+
+        var justification = legendRight ? Plot.RIGHT : (legendLeft ? Plot.LEFT : Plot.CENTER);
+        llab = marker + ";" + justification + "\n" + llab;
+        plot.setLineWidth(width);
+        plot.addPoints(new float[]{(float) (legendPosX)},
+                new float[]{(float) (legPosY)},
+                null, Plot.AIJ_LEGEND_ENTRY, llab);
         plot.setLineWidth(1);
         return true;
     }
@@ -6202,7 +6176,7 @@ public class MultiPlot_ implements PlugIn, KeyListener {
                     button2Drag = SwingUtilities.isMiddleMouseButton(e); // and save to results window when mouse released
                     plotbottompanel = (Panel) plotWindow.getComponent(1);
                     plotbottompanel.setSize(600, 30);
-                    plotcoordlabel = (Label) plotbottompanel.getComponent(5);
+                    plotcoordlabel = (Label) plotbottompanel.getComponent(plotbottompanel.getComponentCount() - 1);
                     plotcoordlabel.setSize(400, 20);
                     plotcoordlabel.setText("x=" + fourPlaces.format(x+xOffset) + ", y=" + fourPlaces.format(y) + ", dx=" + fourPlaces.format(dx) + ", dy=" + fourPlaces.format(dy));
                     IJ.showStatus("plot coordinates: x=" + fourPlaces.format(x) + ", y=" + fourPlaces.format(y) + ", dx=" + fourPlaces.format(dx) + ", dy=" + fourPlaces.format(dy));
@@ -7737,6 +7711,7 @@ public class MultiPlot_ implements PlugIn, KeyListener {
 
         mainpanelgroupa = new JPanel(new SpringLayout());
 
+        dataSectionBorder.setTitleFont(b12);
         mainpanelgroupa.setBorder(dataSectionBorder);
         JPanel mainpanelgroupb = new JPanel(new SpringLayout());
         mainpanelgroupb.setBorder(BorderFactory.createTitledBorder("Data Options"));
@@ -15014,7 +14989,7 @@ public class MultiPlot_ implements PlugIn, KeyListener {
         }
     }
 
-    static void rebuildRefStarJPanel() {
+    static void relayoutRefStarPanel() {
         if (allNonePanel != null) {
             allNonePanel.validate();
             SpringUtil.makeCompactGrid(allNonePanel, 1, allNonePanel.getComponentCount(), 2, 2, 2, 2);
@@ -15091,7 +15066,7 @@ public class MultiPlot_ implements PlugIn, KeyListener {
                     needsPanelUpdate = true;
                 }
             }
-            if (needsPanelUpdate) rebuildRefStarJPanel();
+            if (needsPanelUpdate) relayoutRefStarPanel();
         });
         forceMagDisplayPanel.add(forceMagDisplayButton);
         JButton forceNoMagDisplayButton = new JButton("Hide Magnitudes");
@@ -15106,7 +15081,7 @@ public class MultiPlot_ implements PlugIn, KeyListener {
                     needsPanelUpdate = true;
                 }
             }
-            if (needsPanelUpdate) rebuildRefStarJPanel();
+            if (needsPanelUpdate) relayoutRefStarPanel();
         });
         forceMagDisplayPanel.add(forceNoMagDisplayButton);
 
@@ -15372,7 +15347,7 @@ public class MultiPlot_ implements PlugIn, KeyListener {
                 if (hasAbsMag || forceAbsMagDisplay) {
                     refStarPanel[r].add(absMagTF[r]);
                 }
-                SpringUtil.makeCompactGrid(refStarPanel[r], refStarPanel[r].getComponentCount(), 1, 0, 0, 0, 0);
+                SpringUtil.makeCompactGrid(refStarPanel[r], refStarPanel[r].getComponentCount(), 1, 2, 2, 2, 2);
                 starsPanel.add(refStarPanel[r]);
             }
             defaultCBColor = refStarCB[0].getBackground();
@@ -15383,7 +15358,7 @@ public class MultiPlot_ implements PlugIn, KeyListener {
                     JPanel[] dummyPanel = new JPanel[fill];
                     for (int i = 0; i < fill; i++) {
                         dummyPanel[i] = new JPanel();
-                        dummyPanel[i].setMaximumSize(refStarPanel[0].getSize());
+                        dummyPanel[i].setMaximumSize(refStarPanel[0].getPreferredSize());
                         starsPanel.add(dummyPanel[i]);
                     }
                 }
@@ -15468,15 +15443,18 @@ public class MultiPlot_ implements PlugIn, KeyListener {
         SpringUtil.makeCompactGrid(refStarMainPanel, refStarMainPanel.getComponentCount(), 1, 6, 6, 6, 6);
 
         refStarFrame.add(refStarScrollPane);
-        refStarFrame.pack();
         refStarFrame.setResizable(true);
+
+        UIHelper.recursiveFontSetter(refStarFrame, p11);
+        GUI.scaleFrame(refStarFrame);
+        refStarFrame.pack();
 
         if (rememberWindowLocations) {
             IJU.setFrameSizeAndLocation(refStarFrame, refStarFrameLocationX, refStarFrameLocationY, 0, 0);
         }
-        UIHelper.recursiveFontSetter(refStarFrame, p11);
-        GUI.scaleFrame(refStarFrame);
-        refStarFrame.pack();
+
+        // Recaluate the component layout as we are now scaled
+        relayoutRefStarPanel();
         refStarFrame.setVisible(true);
         refStarPanelWasShowing = true;
         FileDrop fileDrop = new FileDrop(refStarMainPanel, BorderFactory.createEmptyBorder(), MultiPlot_::openDragAndDropFiles);
@@ -16327,15 +16305,18 @@ public class MultiPlot_ implements PlugIn, KeyListener {
     }
 
     static void closeRefStarFrame() {
-        if (refStarFrame.isShowing()) {
-            refStarFrameLocationX = refStarFrame.getLocation().x;
-            refStarFrameLocationY = refStarFrame.getLocation().y;
-            refStarFrame.setVisible(false);
-            Prefs.set("plot2.refStarFrameLocationX", refStarFrameLocationX);
-            Prefs.set("plot2.refStarFrameLocationY", refStarFrameLocationY);
+        if (refStarFrame != null) {
+            if (refStarFrame.isShowing()) {
+                refStarFrameLocationX = refStarFrame.getLocation().x;
+                refStarFrameLocationY = refStarFrame.getLocation().y;
+                refStarFrame.setVisible(false);
+                Prefs.set("plot2.refStarFrameLocationX", refStarFrameLocationX);
+                Prefs.set("plot2.refStarFrameLocationY", refStarFrameLocationY);
+            }
+
+            refStarFrame.dispose();
         }
 
-        refStarFrame.dispose();
         refStarFrame = null;
     }
 
@@ -17323,36 +17304,36 @@ public class MultiPlot_ implements PlugIn, KeyListener {
         s = s.replaceFirst("_[CT][0-9]+(_[dfn]+)?$", "").toLowerCase(Locale.ENGLISH);
 
         return switch (s) {
-            case "rel_flux" -> "_flux";
-            case "rel_flux_err" -> "_err";
-            case "jd", "j.d." -> "_JDutc";
-            case "mjd" -> "_MJDutc";
-            case "bjd_tdb" -> "_BJDtdb";
-            case "hjd" -> "_HJDutc";
-            case "airmass", "air" -> "_am";
-            case "ra" -> "_ra";
-            case "dec" -> "_dec";
-            case "x(ij)", "x(fits)" -> "_xCen";
-            case "y(ij)", "y(fits)" -> "_yCen";
-            case "source-sky" -> "_src";
-            case "peak" -> "_peak";
-            case "mean" -> "_mean";
-            case "sky/pixel" -> "_sky";
-            case "fwhm", "width" -> "_fwhm";
-            case "x-width" -> "_xWidth";
-            case "y-width" -> "_yWidth";
-            case "angle" -> "_angle";
-            case "roundness" -> "_rnd";
-            case "wmshumid" -> "_humid";
-            case "ccdatemp", "ccd-temp" -> "_temp";
-            case "exposure", "exptime", "exp-time" -> "_expt";
-            case "foc" -> "_foc";
-            case "moonfrac" -> "_moonfrac";
-            case "source_radius" -> "_srcRad";
-            case "tot_c_cnts" -> "_totC";
-            case "tot_c_err" -> "_totCErr";
-            case "fjd", "fj.d.", "fbjd_tdb" -> "_fTime";
-            case "meridian_flip" -> "_mf";
+            case "rel_flux" -> "-flux";
+            case "rel_flux_err" -> "-err";
+            case "jd", "j.d." -> "_JD";
+            case "mjd" -> "_MJD";
+            case "bjd_tdb" -> "_BJD";
+            case "hjd" -> "_HJD";
+            case "airmass", "air" -> "-am";
+            case "ra" -> "-ra";
+            case "dec" -> "-dec";
+            case "x(ij)", "x(fits)" -> "-xCen";
+            case "y(ij)", "y(fits)" -> "-yCen";
+            case "source-sky" -> "-src";
+            case "peak" -> "-peak";
+            case "mean" -> "-mean";
+            case "sky/pixel" -> "-sky";
+            case "fwhm", "width" -> "-fwhm";
+            case "x-width" -> "-xWidth";
+            case "y-width" -> "-yWidth";
+            case "angle" -> "-angle";
+            case "roundness" -> "-rnd";
+            case "wmshumid" -> "-humid";
+            case "ccdatemp", "ccd-temp" -> "-temp";
+            case "exposure", "exptime", "exp-time" -> "-expt";
+            case "foc" -> "-foc";
+            case "moonfrac" -> "-moonfrac";
+            case "source_radius" -> "-srcRad";
+            case "tot_c_cnts" -> "-totC";
+            case "tot_c_err" -> "-totCErr";
+            case "fjd", "fj.d.", "fbjd_tdb" -> "-fTime";
+            case "meridian_flip" -> "-mf";
             default -> "";
         };
     }
@@ -17952,6 +17933,17 @@ public class MultiPlot_ implements PlugIn, KeyListener {
 
     public static void savePlotImage(String path, String writer) {
         ImagePlus image = WindowManager.getImage("Plot of " + tableName);
+        // Get unscaled plot for saving
+        if (image != null && image.getProperty(VectorPlotDrawing.PROPERTY_KEY)!=null) {
+            var plot = (Plot)(image.getProperty(VectorPlotDrawing.PROPERTY_KEY));
+            if (plot.isAijPlot()) {
+                image = ScopedValue.where(VectorPlotDrawing.SCALED_PLOT, false).call(() -> {
+                    var scaledPlot = plot.duplicate();
+                    scaledPlot.draw();
+                    return scaledPlot.getImagePlus();
+                });
+            }
+        }
         if (image == null) {
             IJ.beep();
             IJ.showMessage("No plot image to save");
@@ -18110,6 +18102,17 @@ public class MultiPlot_ implements PlugIn, KeyListener {
         if (savePlot) {
             String imagepath = filenamesProvided ? plotPath : outBase + plotSuffix + "." + imageFormat;
             ImagePlus image = WindowManager.getImage("Plot of " + tableName);
+            // Get unscaled plot for saving
+            if (image != null && image.getProperty(VectorPlotDrawing.PROPERTY_KEY)!=null) {
+                var plot = (Plot)(image.getProperty(VectorPlotDrawing.PROPERTY_KEY));
+                if (plot.isAijPlot()) {
+                    image = ScopedValue.where(VectorPlotDrawing.SCALED_PLOT, false).call(() -> {
+                        var scaledPlot = plot.duplicate();
+                        scaledPlot.draw();
+                        return scaledPlot.getImagePlus();
+                    });
+                }
+            }
             if (image == null) {
                 IJ.beep();
                 IJ.showMessage("No plot image to save");
