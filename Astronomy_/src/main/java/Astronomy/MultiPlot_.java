@@ -1,6 +1,7 @@
 package Astronomy;
 
 import java.awt.Color;
+import java.awt.Component;
 import java.awt.Cursor;
 import java.awt.Desktop;
 import java.awt.Dimension;
@@ -43,6 +44,7 @@ import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.PrintWriter;
+import java.lang.reflect.InvocationTargetException;
 import java.net.URL;
 import java.nio.file.Path;
 import java.text.DecimalFormat;
@@ -2313,6 +2315,17 @@ public class MultiPlot_ implements PlugIn, KeyListener {
             plot.addLabel(10/pWid, (h + 43)/h, Plot.X_LABEL_V_ANCHOR + removedCount);
         }
 
+        if (SwingUtilities.isEventDispatchThread()) {
+            drawUpdatedPlot();
+        } else {
+            try {
+                SwingUtilities.invokeAndWait(MultiPlot_::drawUpdatedPlot);
+            } catch (InterruptedException | InvocationTargetException _) {
+            }
+        }
+    }
+
+    private static void drawUpdatedPlot() {
         if (plotImage == null) {
             // Freeze plot as we draw it again later
             plot.setFrozen(true);
@@ -2426,17 +2439,7 @@ public class MultiPlot_ implements PlugIn, KeyListener {
             ((PlotCanvas) plotImageCanvas).setZoomed(() -> zoomY != 0 || zoomX != 0 || draggableShape.isPlotScaleDirty());
         }
 
-        try {
-            if (SwingUtilities.isEventDispatchThread()) {
-                plot.update();
-            } else {
-                SwingUtilities.invokeAndWait(() -> {
-                    plot.update();
-                });
-            }
-        } catch (Exception e) {
-            e.printStackTrace();
-        }
+        plot.update();
 
         plotbottompanel = (Panel) plotWindow.getComponent(1);
         plotbottompanel.getComponentCount();
@@ -2450,8 +2453,11 @@ public class MultiPlot_ implements PlugIn, KeyListener {
         excludedHeadSamples = holdExcludedHeadSamples;
         excludedTailSamples = holdExcludedTailSamples;
         table.setLock(false);
-        plotWindow.getImagePlus().setPlot(plot);
-        ((PlotWindow) plotWindow).setPlot(plot);
+        ScopedValue.where(VectorPlotDrawing.SCALED_PLOT, plot.isAijPlot()).run(() -> {
+            plotWindow.getImagePlus().setPlot(plot);
+            plotWindow.getImagePlus().setProperty(VectorPlotDrawing.PROPERTY_KEY, plot);
+            plotWindow.drawPlot(plot);
+        });
         updatePlotPos();
         suppressDataUpdate = false;
         updatePlotRunning = false;
@@ -5343,6 +5349,7 @@ public class MultiPlot_ implements PlugIn, KeyListener {
                 if (OKbutton != null) {
                     OKbutton.setForeground(Color.RED);
                     OKbutton.setText("working...");
+                    OKbutton.setEnabled(false);
                     OKbutton.paint(OKbutton.getGraphics());
                 }
             });
@@ -5354,42 +5361,47 @@ public class MultiPlot_ implements PlugIn, KeyListener {
 
             saveAstroPanelPrefs();
             checkAndLockTable();
-            int tableLength = table.getCounter();
-            for (int i = 0; i < tableLength; i++) {
-                if (updateMPCC(i)) {
-                    if (addAirmass) table.setValue(airmassName, i, acc.getAirmass());
-                    if (addAltitude) table.setValue(altitudeName, i, acc.getAltitude());
-                    if (addAzimuth) table.setValue(azimuthName, i, acc.getAzimuth());
-                    if (addHourAngle) table.setValue(hourAngleName, i, acc.getHourAngle());
-                    if (addZenithDistance) table.setValue(zenithDistanceName, i, acc.getZenithDistance());
-                    if (addGJD) table.setValue(gjdName, i, acc.getJD());
-                    if (addHJD) table.setValue(hjdName, i, acc.getHJD());
-                    if (addHJDCorr) table.setValue(hjdCorrName, i, acc.getHJDCorrection());
-                    if (addBJD) table.setValue(bjdName, i, acc.getBJD());
-                    if (addBJDCorr) table.setValue(bjdCorrName, i, acc.getBJDCorrection());
-                    if (addRaNow) table.setValue(raNowName, i, acc.getRAEOI());
-                    if (addDecNow) table.setValue(decNowName, i, acc.getDecEOI());
-                    if (addRA2000) table.setValue(ra2000Name, i, acc.getRAJ2000());
-                    if (addDec2000) table.setValue(dec2000Name, i, acc.getDecJ2000());
-                } else {
-                    if (addAirmass) table.setValue(airmassName, i, Double.NaN);
-                    if (addAltitude) table.setValue(altitudeName, i, Double.NaN);
-                    if (addAzimuth) table.setValue(azimuthName, i, Double.NaN);
-                    if (addHourAngle) table.setValue(hourAngleName, i, Double.NaN);
-                    if (addZenithDistance) table.setValue(zenithDistanceName, i, Double.NaN);
-                    if (addGJD) table.setValue(gjdName, i, Double.NaN);
-                    if (addHJD) table.setValue(hjdName, i, Double.NaN);
-                    if (addHJDCorr) table.setValue(hjdCorrName, i, Double.NaN);
-                    if (addBJD) table.setValue(bjdName, i, Double.NaN);
-                    if (addBJDCorr) table.setValue(bjdCorrName, i, Double.NaN);
-                    if (addRaNow) table.setValue(raNowName, i, Double.NaN);
-                    if (addDecNow) table.setValue(decNowName, i, Double.NaN);
-                    if (addRA2000) table.setValue(ra2000Name, i, Double.NaN);
-                    if (addDec2000) table.setValue(dec2000Name, i, Double.NaN);
-                }
+            try (var exec = Executors.newSingleThreadExecutor()) {
+                exec.execute(() -> {
+                    acc.bulkProcessTimes(table, useTableRaDec, raColumn, decColumn, JDColumn);
+                    int tableLength = table.getCounter();
+                    for (int i = 0; i < tableLength; i++) {
+                        if (updateMPCC(i)) {
+                            if (addAirmass) table.setValue(airmassName, i, acc.getAirmass());
+                            if (addAltitude) table.setValue(altitudeName, i, acc.getAltitude());
+                            if (addAzimuth) table.setValue(azimuthName, i, acc.getAzimuth());
+                            if (addHourAngle) table.setValue(hourAngleName, i, acc.getHourAngle());
+                            if (addZenithDistance) table.setValue(zenithDistanceName, i, acc.getZenithDistance());
+                            if (addGJD) table.setValue(gjdName, i, acc.getJD());
+                            if (addHJD) table.setValue(hjdName, i, acc.getHJD());
+                            if (addHJDCorr) table.setValue(hjdCorrName, i, acc.getHJDCorrection());
+                            if (addBJD) table.setValue(bjdName, i, acc.getBJD());
+                            if (addBJDCorr) table.setValue(bjdCorrName, i, acc.getBJDCorrection());
+                            if (addRaNow) table.setValue(raNowName, i, acc.getRAEOI());
+                            if (addDecNow) table.setValue(decNowName, i, acc.getDecEOI());
+                            if (addRA2000) table.setValue(ra2000Name, i, acc.getRAJ2000());
+                            if (addDec2000) table.setValue(dec2000Name, i, acc.getDecJ2000());
+                        } else {
+                            if (addAirmass) table.setValue(airmassName, i, Double.NaN);
+                            if (addAltitude) table.setValue(altitudeName, i, Double.NaN);
+                            if (addAzimuth) table.setValue(azimuthName, i, Double.NaN);
+                            if (addHourAngle) table.setValue(hourAngleName, i, Double.NaN);
+                            if (addZenithDistance) table.setValue(zenithDistanceName, i, Double.NaN);
+                            if (addGJD) table.setValue(gjdName, i, Double.NaN);
+                            if (addHJD) table.setValue(hjdName, i, Double.NaN);
+                            if (addHJDCorr) table.setValue(hjdCorrName, i, Double.NaN);
+                            if (addBJD) table.setValue(bjdName, i, Double.NaN);
+                            if (addBJDCorr) table.setValue(bjdCorrName, i, Double.NaN);
+                            if (addRaNow) table.setValue(raNowName, i, Double.NaN);
+                            if (addDecNow) table.setValue(decNowName, i, Double.NaN);
+                            if (addRA2000) table.setValue(ra2000Name, i, Double.NaN);
+                            if (addDec2000) table.setValue(dec2000Name, i, Double.NaN);
+                        }
+                    }
+                });
             }
 
-
+            acc.clearBulkTimes();
             table.show();
             table.setLock(false);
             if (!autoAstroDataUpdateRunning) updatePlot(updateAllFits(), false);
@@ -5397,6 +5409,7 @@ public class MultiPlot_ implements PlugIn, KeyListener {
                 if (OKbutton != null) {
                     OKbutton.setForeground(defaultOKForeground);
                     OKbutton.setText("Update Table");
+                    OKbutton.setEnabled(true);
                     OKbutton.paint(OKbutton.getGraphics());
                 }
             });
@@ -11165,6 +11178,10 @@ public class MultiPlot_ implements PlugIn, KeyListener {
 
 
     static void showMoreCurvesJPanel() {
+        if (subFrame != null) {
+            subFrame.dispose();
+            subFrame = null;
+        }
         if (subFrame == null) {
             subFrame = new JFrame("Multi-plot Y-data") {
                 @Override
@@ -14558,7 +14575,23 @@ public class MultiPlot_ implements PlugIn, KeyListener {
         } else {
             IJU.setFrameSizeAndLocation(fitFrame[c], 40 + c * 25, 40 + c * 25, 0, 0);
         }
-        GUI.scaleFrame(fitFrame[c]);
+        if (c != 0) {
+            var popups = new Component[priorCenterStepPopup.length + priorWidthStepPopup.length + fitStepStepPopup.length + 8];
+            System.arraycopy(priorCenterStepPopup, 0, popups, 0, priorCenterStepPopup.length);
+            System.arraycopy(priorWidthStepPopup, 0, popups, priorCenterStepPopup.length, priorWidthStepPopup.length);
+            System.arraycopy(fitStepStepPopup, 0, popups, priorCenterStepPopup.length + priorWidthStepPopup.length, fitStepStepPopup.length);
+            popups[priorCenterStepPopup.length + priorWidthStepPopup.length + fitStepStepPopup.length + 0] = eccentricityStepPopup;
+            popups[priorCenterStepPopup.length + priorWidthStepPopup.length + fitStepStepPopup.length + 1] = omegaStepPopup;
+            popups[priorCenterStepPopup.length + priorWidthStepPopup.length + fitStepStepPopup.length + 2] = teffStepPopup;
+            popups[priorCenterStepPopup.length + priorWidthStepPopup.length + fitStepStepPopup.length + 3] = jminuskStepPopup;
+            popups[priorCenterStepPopup.length + priorWidthStepPopup.length + fitStepStepPopup.length + 4] = mStarStepPopup;
+            popups[priorCenterStepPopup.length + priorWidthStepPopup.length + fitStepStepPopup.length + 5] = rStarStepPopup;
+            popups[priorCenterStepPopup.length + priorWidthStepPopup.length + fitStepStepPopup.length + 6] = rhoStarStepPopup;
+            popups[priorCenterStepPopup.length + priorWidthStepPopup.length + fitStepStepPopup.length + 7] = orbitalPeriodStepPopup;
+            GUI.scaleFrame(fitFrame[c], popups);
+        } else {
+            GUI.scaleFrame(fitFrame[c]);
+        }
         if (openFitPanels && detrendFitIndex[c] == 9) fitFrame[c].setVisible(true);
 
         FileDrop fileDrop = new FileDrop(fitPanel[c], BorderFactory.createEmptyBorder(), MultiPlot_::openDragAndDropFiles);
