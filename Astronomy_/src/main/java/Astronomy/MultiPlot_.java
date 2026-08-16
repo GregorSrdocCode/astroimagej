@@ -51,6 +51,7 @@ import java.text.DecimalFormat;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
+import java.util.Comparator;
 import java.util.Enumeration;
 import java.util.Hashtable;
 import java.util.Locale;
@@ -65,9 +66,11 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Consumer;
+import java.util.function.Function;
 import java.util.function.IntConsumer;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
+import java.util.stream.Collectors;
 import java.util.stream.DoubleStream;
 import java.util.stream.IntStream;
 
@@ -113,6 +116,7 @@ import javax.swing.event.PopupMenuEvent;
 import javax.swing.event.PopupMenuListener;
 
 import Astronomy.multiplot.KeplerSplineControl;
+import Astronomy.multiplot.MeridianFlip;
 import Astronomy.multiplot.PlotDraggableShape;
 import Astronomy.multiplot.gui.ConstantColSubset;
 import Astronomy.multiplot.macro.title.EditorArea;
@@ -210,6 +214,7 @@ public class MultiPlot_ implements PlugIn, KeyListener {
     public static final ImageIcon CUSTOM_LEGEND_ICON = createImageIcon("astroj/images/customlegend.png", "Use a custom legend for this data set");
     static final double defaultTcFitStep = 0.04;
     public static final ImageIcon GEAR_ICON = UIHelper.createImageIcon("Astronomy/images/icons/multiplot/gear.png", -1, 22);
+    private static final MeridianFlip meridianFlip = new MeridianFlip();
     static boolean panelsUpdating;
     static String title;
     static double titlePosX;
@@ -426,7 +431,7 @@ public class MultiPlot_ implements PlugIn, KeyListener {
     static String combinedTableName;
     static String requestedTableName;
     static String templateDir;
-    static String JDColumn, raColumn, decColumn;
+    static String JDColumn, raColumn, decColumn, latColumn, lonColumn;
     static int jdCol, raCol, decCol;
 
     static int n;
@@ -690,7 +695,7 @@ public class MultiPlot_ implements PlugIn, KeyListener {
     static JRadioButton unphasedButton, dayssincetcButton, hourssincetcButton, orbitalphaseButton;
 
     static JRadioButton useGJDButton, useHJDButton, useBJDButton, useManualRaDecButton, useTableRaDecButton;
-    static boolean useGJD = true, useHJD = false, useBJD = false, useTableRaDec = false;
+    static boolean useGJD = true, useHJD = false, useBJD = false, useTableRaDec = false, useTableLatLon;
     static ButtonGroup JDRadioGroup, RaDecRadioGroup;
 
     static SpinnerModel mmagrefsmodel;
@@ -704,7 +709,10 @@ public class MultiPlot_ implements PlugIn, KeyListener {
     static JPopupMenu ymaxsteppopup, yminsteppopup;
     static JPopupMenu plotwidthsteppopup, plotheightsteppopup, trimdataheadsteppopup, trimdatatailsteppopup;
     static JPopupMenu xaxispopup, yaxispopup, legendpopup;
-    static JPopupMenu xsteppopup, T0steppopup, periodsteppopup, durationsteppopup;
+    public static JPopupMenu xsteppopup;
+    static JPopupMenu T0steppopup;
+    static JPopupMenu periodsteppopup;
+    static JPopupMenu durationsteppopup;
 
     static SpinnerModel ymaxstepmodel, yminstepmodel;
     static SpinnerModel plotwidthstepmodel, plotheightstepmodel;
@@ -726,11 +734,16 @@ public class MultiPlot_ implements PlugIn, KeyListener {
     static JSpinner T0spinner, periodspinner, durationspinner;
 
     static JCheckBox showVMarker1CB, showVMarker2CB, twoxPeriodCB, oddNotEvenCB, periodSyncCB;
-    static JCheckBox showMFMarkersCB, showDMarkersCB, useDMarker1CB, useDMarker4CB;
+    public static JCheckBox showMFMarkersCB;
+    static JCheckBox showDMarkersCB;
+    static JCheckBox useDMarker1CB;
+    static JCheckBox useDMarker4CB;
 
     static JButton moreybutton, closebutton, grabautoxbutton, grabautoybutton, updateplotbutton, addastrodatabutton, refStarButton, OKbutton;
     static String tableName;
-    static String[] columns, unfilteredColumns, oldUnfilteredColumns;
+    public static String[] columns;
+    static String[] unfilteredColumns;
+    static String[] oldUnfilteredColumns;
     static String[] columnswd, columnsDetrend;
 
     static MeasurementTable table;
@@ -754,7 +767,7 @@ public class MultiPlot_ implements PlugIn, KeyListener {
     static int[] nFitTrim;
     static int maxColumnLength;
     static double vMarker1Value = 0.5, vMarker2Value = 0.7;
-    static double xStep = 0.001;
+    public static double xStep = 0.001;
     static double T0Step = 0.001, periodStep = 0.0001, durationStep = 0.01;
     static double dMarker1Value = 0.3, dMarker2Value = 0.5, dMarker3Value = 0.7, dMarker4Value = 0.9;
     static double mfMarker1Value = 0.6;
@@ -979,7 +992,7 @@ public class MultiPlot_ implements PlugIn, KeyListener {
     static Font p8 = new Font(fontName, Font.PLAIN, 8);
     static Font p9 = new Font(fontName, Font.PLAIN, 9);
     static Font p10 = new Font(fontName, Font.PLAIN, 10);
-    static Font p11 = new Font(fontName, Font.PLAIN, 11);
+    public static Font p11 = new Font(fontName, Font.PLAIN, 11);
     static Font p12 = new Font(fontName, Font.PLAIN, 12);
     static Font b11 = new Font(fontName, Font.BOLD, 11);
     static Font b12 = new Font(fontName, Font.BOLD, 12);
@@ -1041,6 +1054,8 @@ public class MultiPlot_ implements PlugIn, KeyListener {
     private static String lastUsedTitle, lastUsedSubtitle;
     @PropertyKey(value = "plot.periodAlias", ignoreAffixes = true)
     static final Property<Integer> periodAlias = new Property<>(1, MultiPlot_.class);
+    private static final ExecutorService astroExecutor = Executors.newSingleThreadExecutor();
+    private static volatile Future<?> currentTask;
 
     public static IntConsumer addTableData = i -> {
         if (!autoAstroDataUpdate || !addAstroDataFrameWasShowing) {
@@ -1090,6 +1105,8 @@ public class MultiPlot_ implements PlugIn, KeyListener {
 
         saveAstroPanelPrefs();
         checkAndLockTable();
+        var oSharedSkies = acc.useSharedSkies();
+        acc.setUseSharedSkies(addBJD && oSharedSkies && useGJD);
         if (updateMPCC(i)) {
             if (addAirmass) table.setValue(airmassName, i, acc.getAirmass());
             if (addAltitude) table.setValue(altitudeName, i, acc.getAltitude());
@@ -1121,6 +1138,7 @@ public class MultiPlot_ implements PlugIn, KeyListener {
             if (addRA2000) table.setValue(ra2000Name, i, Double.NaN);
             if (addDec2000) table.setValue(dec2000Name, i, Double.NaN);
         }
+        acc.setUseSharedSkies(oSharedSkies);
         table.setLock(false);
     };
     private static PlotDataLock plotDataLock;
@@ -1128,6 +1146,7 @@ public class MultiPlot_ implements PlugIn, KeyListener {
     private static boolean[] usesYModel2;
     private static boolean performingBulkShiftUpdate;
     private static final ExecutorService MP_THREAD = Executors.newSingleThreadExecutor();
+    private static ColCalcKey meridianFlipCalcKey;
 
     static {
         initializeVariables();
@@ -1493,6 +1512,125 @@ public class MultiPlot_ implements PlugIn, KeyListener {
 
     static public void setPlotAutoMode(boolean mode) {
         plotAutoMode = mode;
+    }
+
+    public static void calculateMeridianFlip() {
+        if (meridianFlip.getFlipType() != MeridianFlip.FlipType.COLUMN) {
+            meridianFlipCalcKey = null;
+            mfMarker1Value = meridianFlip.getMeridianFlip();
+            return;
+        }
+
+        // MF calculation is not needed
+        if (meridianFlipCalcKey != null) {
+            var calcKey = ColCalcKey.create(table, xlabel2[firstCurve]);
+            if (Objects.equals(calcKey, meridianFlipCalcKey)) {
+                return;
+            }
+            meridianFlipCalcKey = calcKey;
+        } else {
+            meridianFlipCalcKey = ColCalcKey.create(table, xlabel2[firstCurve]);
+        }
+
+        var colName = MeridianFlip.FLIP_COL.get();
+        var colId = table.getColumnIndex(colName);
+        //if (true)return;
+        if (colId == ResultsTable.COLUMN_NOT_FOUND) {
+            SwingUtilities.invokeLater(() -> {
+                IJ.error("Meridian Flip", """
+                        Could not find the selected source column.
+                        Using previous flip value.
+                        """);
+            });
+            return;
+        }
+
+        var xCol = table.getColumnIndex(xlabel2[firstCurve]);
+        if (xCol == ResultsTable.COLUMN_NOT_FOUND) {
+            SwingUtilities.invokeLater(() -> {
+                IJ.error("Meridian Flip", """
+                        Could not find the selected x-axis column.
+                        Using previous flip value.
+                        """);
+            });
+            return;
+        }
+
+        int row;
+        int[] validRows;
+        if (table.isStringColumn(colId)) {
+            var col = table.bulkGetColumnAsStrings(colId);
+            var counts = Arrays.stream(col)
+                    .collect(Collectors.groupingBy(Function.identity(), Collectors.counting()));
+            if (counts.size() != 2) {
+                SwingUtilities.invokeLater(() -> {
+                    IJ.error("Meridian Flip", """
+                        There was either no change in the values or more than 2 changes in the selected source column for meridian flip calculation.
+                        Using previous flip value.
+                        """);
+                });
+                return;
+            }
+            validRows = IntStream.range(1, col.length)
+                    .boxed()
+                    .sorted(Comparator.comparingDouble(i -> table.getValueAsDouble(xCol, i)))
+                    .filter(i -> !Objects.equals("NaN", col[i]))
+                    .mapToInt(Integer::intValue)
+                    .toArray();
+            row = Arrays.stream(validRows).skip(1)
+                    .filter(i -> !Objects.equals(col[i], col[i - 1]))
+                    .findFirst().orElse(-1);
+        } else {
+            var col = table.bulkGetColumnAsDoubles(colId);
+            var counts = Arrays.stream(col)
+                    .filter(Double::isFinite)
+                    .boxed()
+                    .collect(Collectors.groupingBy(Function.identity(), Collectors.counting()));
+            if (counts.size() != 2) {
+                SwingUtilities.invokeLater(() -> {
+                    IJ.error("Meridian Flip", """
+                        There was either no change in the values or more than 2 changes in the selected source column for meridian flip calculation.
+                        Using previous flip value.
+                        """);
+                });
+                return;
+            }
+            validRows = IntStream.range(1, col.length)
+                    .filter(i -> Double.isFinite(col[i]))
+                    .boxed()
+                    .sorted(Comparator.comparingDouble(i -> table.getValueAsDouble(xCol, i)))
+                    .mapToInt(Integer::intValue)
+                    .toArray();
+            row = Arrays.stream(validRows).skip(1)
+                    .filter(i -> Double.compare(col[i], col[i - 1]) != 0)
+                    .findFirst().orElse(-1);
+        }
+
+        if (row <= 0 || row >= table.size()) {
+            SwingUtilities.invokeLater(() -> {
+                IJ.error("Meridian Flip", """
+                        Meridian flip calculation found a row that is not in the table!
+                        Using previous flip value.
+                        """);
+            });
+            return;
+        }
+
+        var a = table.getValueAsDouble(xCol, row);
+        var prevRow = IntStream.range(0, validRows.length)
+                .map(i -> validRows.length - i - 1) // Reverse to descending order
+                .map(i -> validRows[i])
+                .filter(i -> i != row && table.getValueAsDouble(xCol, i) <= a)
+                .findFirst().orElse(row);
+        var b = table.getValueAsDouble(xCol, prevRow);
+
+        var mf = (a + b) / 2D;
+
+        mfMarker1Value = mf - xOffset;
+        if (xlabel2[curve].startsWith("J.D.-2400000")) {
+            mfMarker1Value += 2400000;
+        }
+        meridianFlip.setMeridianFlip(mfMarker1Value);
     }
 
     static public void clearPlot() {
@@ -3046,6 +3184,8 @@ public class MultiPlot_ implements PlugIn, KeyListener {
         if (!showXAxisNormal) {
             applyXAutoScale(x);
         }
+
+        calculateMeridianFlip();
 
         var normAverageSet = new double[maxCurves];
         boolean[] finalUpdateFit = updateFit;
@@ -5107,6 +5247,89 @@ public class MultiPlot_ implements PlugIn, KeyListener {
         SpringUtil.makeCompactGrid(radeccolumnpanel, 1, radeccolumnpanel.getComponentCount(), 0, 0, 0, 0);
         addAstroDataPanel.add(radeccolumnpanel);
 
+        var useManualLatLonButton = new JRadioButton("Manual");
+        useManualLatLonButton.setToolTipText("Manually enter Lat and Lon in 'MP Coordinate Converter' panel");
+        var useTableLatLonButton = new JRadioButton("Table");
+        useTableLatLonButton.setToolTipText("Use Lat and Lon values from specified table columns");
+
+        MutableComboBoxModel<String> lonDefaultModel = new DefaultComboBoxModel<>(columns);
+        var lonColumnBox = new JComboBox<>(lonDefaultModel);
+        MutableComboBoxModel<String> latdefaultmodel = new DefaultComboBoxModel<>(columns);
+        var latColumnBox = new JComboBox<>(latdefaultmodel);
+
+        if (useTableLatLon) {
+            useTableLatLonButton.setSelected(true);
+            useManualLatLonButton.setSelected(false);
+            acc.setEnableObservatoryEntry(false);
+        } else { //use manual Lat/Lon entry
+            useTableLatLonButton.setSelected(false);
+            useManualLatLonButton.setSelected(true);
+            acc.setEnableObservatoryEntry(true);
+        }
+
+        var LatLonRadioGroup = new ButtonGroup();
+        LatLonRadioGroup.add(useManualLatLonButton);
+        LatLonRadioGroup.add(useTableLatLonButton);
+
+        useManualLatLonButton.addActionListener(ae -> {
+            useTableLatLon = false;
+            latColumnBox.setEnabled(false);
+            lonColumnBox.setEnabled(false);
+            acc.setEnableObservatoryEntry(true);
+            if (!astroConverterUpdating) updateMPCC(-1);
+        });
+        useTableLatLonButton.addActionListener(ae -> {
+            useTableLatLon = true;
+            latColumnBox.setEnabled(true);
+            lonColumnBox.setEnabled(true);
+            acc.setEnableObservatoryEntry(false);
+            if (!astroConverterUpdating) updateMPCC(-1);
+        });
+
+        var latLonSelectionPanel = new JPanel(new SpringLayout());
+        latLonSelectionPanel.setBorder(BorderFactory.createTitledBorder("Lat/Lon Source"));
+        latLonSelectionPanel.add(useManualLatLonButton);
+        latLonSelectionPanel.add(useTableLatLonButton);
+        SpringUtil.makeCompactGrid(latLonSelectionPanel, 1, latLonSelectionPanel.getComponentCount(), 2, 0, 2, 0);
+        addAstroDataPanel.add(latLonSelectionPanel);
+
+        JPanel latLonColumnPanel = new JPanel(new SpringLayout());
+
+        JPanel latColumnPanel = new JPanel(new SpringLayout());
+        latColumnPanel.setBorder(BorderFactory.createTitledBorder("Lat Column (deg)"));
+        latColumnBox.setSelectedItem(latColumn);
+        latColumnBox.setEnabled(useTableLatLon);
+        latColumnBox.setToolTipText("Table column containing observatory latitude (in degrees)");
+        latColumnBox.setPrototypeDisplayValue("123456789012345");
+        latColumnBox.addActionListener(_ -> {
+            latColumn = (String) latColumnBox.getSelectedItem();
+            if (!astroConverterUpdating) updateMPCC(-1);
+        });
+
+        latColumnPanel.add(latColumnBox);
+        latColumnPanel.setPreferredSize(new Dimension(125, 25));
+        SpringUtil.makeCompactGrid(latColumnPanel, 1, 1, 0, 0, 0, 0);
+        latLonColumnPanel.add(latColumnPanel);
+
+
+        JPanel lonColumnPanel = new JPanel(new SpringLayout());
+        lonColumnPanel.setBorder(BorderFactory.createTitledBorder("Lon Column (deg)"));
+        lonColumnBox.setSelectedItem(lonColumn);
+        lonColumnBox.setEnabled(useTableLatLon);
+        lonColumnBox.setToolTipText("Table column containing observatory longitude (in degrees)");
+        lonColumnBox.setPrototypeDisplayValue("123456789012345");
+        lonColumnBox.addActionListener(_ -> {
+            lonColumn = (String) lonColumnBox.getSelectedItem();
+            if (!astroConverterUpdating) updateMPCC(-1);
+        });
+
+        lonColumnPanel.add(lonColumnBox);
+        lonColumnPanel.setPreferredSize(new Dimension(125, 25));
+        SpringUtil.makeCompactGrid(lonColumnPanel, 1, 1, 0, 0, 0, 0);
+        latLonColumnPanel.add(lonColumnPanel);
+
+        SpringUtil.makeCompactGrid(latLonColumnPanel, 1, latLonColumnPanel.getComponentCount(), 0, 0, 0, 0);
+        addAstroDataPanel.add(latLonColumnPanel);
 
         JLabel dataTitleLabel = new JLabel("Select data to add");
         addAstroDataPanel.add(dataTitleLabel);
@@ -5203,7 +5426,15 @@ public class MultiPlot_ implements PlugIn, KeyListener {
         addAstroDataPanel.add(hjdCorrField);
 
         bjdCB = new JCheckBox("BJD_TDB", addBJD);
-        bjdCB.setToolTipText("Add Barycentric Julian Date (TDB) column to active table");
+        bjdCB.setToolTipText("""
+                <html>
+                Internal time conversion is used by Default (faster, less accurate).<br>
+                If Shared Skies is selected in Coordinate Converter,
+                and JD (UTC) is selected for the Input Time Format above, and this checkbox is enabled,
+                and an internet connection is available,<br>
+                the external Shared Skies server will be used to calculate precise BJD_TDB times (slower by more accurate).
+                <html>
+                """);
         addAstroDataPanel.add(bjdCB);
 
         bjdField = new JTextField(bjdName);
@@ -5302,6 +5533,12 @@ public class MultiPlot_ implements PlugIn, KeyListener {
 
         OKbutton = new JButton("Update Table");
         OKbutton.addActionListener(e -> {
+            // Cancel if already running
+            if (currentTask != null && !currentTask.isDone()) {
+                currentTask.cancel(true);
+                return;
+            }
+
             astroConverterUpdating = true;
             JDColumn = (String) jdcolumnbox.getSelectedItem();
             int jdCol = table.getColumnIndex(JDColumn);
@@ -5348,8 +5585,7 @@ public class MultiPlot_ implements PlugIn, KeyListener {
             Thread t = new Thread(() -> {
                 if (OKbutton != null) {
                     OKbutton.setForeground(Color.RED);
-                    OKbutton.setText("working...");
-                    OKbutton.setEnabled(false);
+                    OKbutton.setText("Cancel");
                     OKbutton.paint(OKbutton.getGraphics());
                 }
             });
@@ -5361,11 +5597,23 @@ public class MultiPlot_ implements PlugIn, KeyListener {
 
             saveAstroPanelPrefs();
             checkAndLockTable();
-            try (var exec = Executors.newSingleThreadExecutor()) {
-                exec.execute(() -> {
-                    acc.bulkProcessTimes(table, useTableRaDec, raColumn, decColumn, JDColumn);
+            currentTask = astroExecutor.submit(() -> {
+                try {
+                    var oSharedSkies = acc.useSharedSkies();
+                    acc.setUseSharedSkies(addBJD && oSharedSkies && useGJD);
+                    if (useGJD) {
+                        if (Thread.currentThread().isInterrupted()) {
+                            acc.setUseSharedSkies(oSharedSkies);
+                            return;
+                        }
+                        acc.bulkProcessTimes(table, useTableRaDec, raColumn, decColumn, JDColumn, useTableLatLon, latColumn, lonColumn);
+                    }
                     int tableLength = table.getCounter();
                     for (int i = 0; i < tableLength; i++) {
+                        if (Thread.currentThread().isInterrupted()) {
+                            acc.setUseSharedSkies(oSharedSkies);
+                            return;
+                        }
                         if (updateMPCC(i)) {
                             if (addAirmass) table.setValue(airmassName, i, acc.getAirmass());
                             if (addAltitude) table.setValue(altitudeName, i, acc.getAltitude());
@@ -5398,26 +5646,29 @@ public class MultiPlot_ implements PlugIn, KeyListener {
                             if (addDec2000) table.setValue(dec2000Name, i, Double.NaN);
                         }
                     }
-                });
-            }
+                    acc.setUseSharedSkies(oSharedSkies);
+                } finally {
+                    SwingUtilities.invokeLater(() -> {
+                        acc.clearBulkTimes();
+                        table.show();
+                        table.setLock(false);
+                        if (!autoAstroDataUpdateRunning) updatePlot(updateAllFits(), false);
+                        Thread t2 = new Thread(() -> {
+                            if (OKbutton != null) {
+                                OKbutton.setForeground(defaultOKForeground);
+                                OKbutton.setText("Update Table");
+                                OKbutton.setEnabled(true);
+                                OKbutton.repaint();
+                            }
+                        });
 
-            acc.clearBulkTimes();
-            table.show();
-            table.setLock(false);
-            if (!autoAstroDataUpdateRunning) updatePlot(updateAllFits(), false);
-            Thread t2 = new Thread(() -> {
-                if (OKbutton != null) {
-                    OKbutton.setForeground(defaultOKForeground);
-                    OKbutton.setText("Update Table");
-                    OKbutton.setEnabled(true);
-                    OKbutton.paint(OKbutton.getGraphics());
+                        t2.start();
+                        Thread.yield();
+                        astroConverterUpdating = false;
+                        Prefs.set("plot2.JDColumn", JDColumn);
+                    });
                 }
             });
-
-            t2.start();
-            Thread.yield();
-            astroConverterUpdating = false;
-            Prefs.set("plot2.JDColumn", JDColumn);
         });
 
         OKCancelPanel.add(OKbutton);
@@ -5492,7 +5743,7 @@ public class MultiPlot_ implements PlugIn, KeyListener {
                 }
                 if (returnCode == 3) {
                     IJ.beep();
-                    IJ.showMessage("ERROR: Ohio State access failed when attempting to retrieve BJD(TDB).");
+                    IJ.showMessage("ERROR: Shared Skies access failed when attempting to retrieve BJD(TDB).");
                     return false;
                 }
             }
@@ -5502,6 +5753,29 @@ public class MultiPlot_ implements PlugIn, KeyListener {
 
 
     static boolean processCoordinates(int row) {
+        if (useTableLatLon) {
+            var latCol = table.getColumnIndex(latColumn);
+            var lonCol = table.getColumnIndex(lonColumn);
+            if (latCol == MeasurementTable.COLUMN_NOT_FOUND) {
+                if (row < 1) {
+                    IJ.beep();
+                    IJ.showMessage("Error: could not find Latitude table column '" + latColumn + "'");
+                }
+                return false;
+            }
+            if (lonCol == MeasurementTable.COLUMN_NOT_FOUND) {
+                if (row < 1) {
+                    IJ.beep();
+                    IJ.showMessage("Error: could not find Longitude table column '" + lonColumn + "'");
+                }
+                return false;
+            }
+            var lat = table.getValueAsDouble(latCol, row);
+            var lon = table.getValueAsDouble(lonCol, row);
+            if (Double.isFinite(lat) && Double.isFinite(lon)) {
+                acc.setLatLonAlt(lat, lon, 0);
+            }
+        }
         if (useTableRaDec) {
             raColumn = (String) racolumnbox.getSelectedItem();
             decColumn = (String) deccolumnbox.getSelectedItem();
@@ -5533,7 +5807,7 @@ public class MultiPlot_ implements PlugIn, KeyListener {
         }
         if (returnCode == 3) {
             IJ.beep();
-            IJ.showMessage("ERROR: Ohio State access failed when attempting to retrieve BJD(TDB).");
+            IJ.showMessage("ERROR: Shared Skies access failed when attempting to retrieve BJD(TDB).");
             return false;
         }
         return true;
@@ -6543,6 +6817,8 @@ public class MultiPlot_ implements PlugIn, KeyListener {
         JDColumn = "JD_UTC";
         raColumn = "RA_OBJ";
         decColumn = "DEC_OBJ";
+        latColumn = "LAT_OBS";
+        lonColumn = "LONG_OBS";
         jdCol = 0;
         raCol = 0;
         decCol = 0;
@@ -7608,20 +7884,20 @@ public class MultiPlot_ implements PlugIn, KeyListener {
         else { return "                    1"; }
     }
 
-    static void checkForUT(JSpinner spinner) {
+    public static void checkForUT(JSpinner spinner) {
         JSpinner.NumberEditor ed = (JSpinner.NumberEditor) spinner.getEditor();
         String text = ed.getTextField().getText();
         double dValue = Tools.parseDouble(text);
         if (Double.isNaN(dValue)) {
             double value = 0.5;
-            String[] pieces = text.replaceAll("[^0-9\\.]+", " ").trim().split("[^0-9\\.]+");
-            if (pieces.length > 0 && !pieces[0].trim().equals("")) {
+            String[] pieces = text.replaceAll("[^0-9.]+", " ").trim().split("[^0-9.]+");
+            if (pieces.length > 0 && !pieces[0].trim().isEmpty()) {
                 value += Tools.parseDouble(pieces[0], 0) / 24.0;
             }
-            if (pieces.length > 1 && !pieces[1].trim().equals("")) {
+            if (pieces.length > 1 && !pieces[1].trim().isEmpty()) {
                 value += Tools.parseDouble(pieces[1], 0) / 1440.0;
             }
-            if (pieces.length > 2 && !pieces[2].trim().equals("")) {
+            if (pieces.length > 2 && !pieces[2].trim().isEmpty()) {
                 value += Tools.parseDouble(pieces[2], 0) / 86400.0;
             }
             value %= 1;
@@ -8574,16 +8850,6 @@ public class MultiPlot_ implements PlugIn, KeyListener {
             dmarker2spinner.setModel(new SpinnerNumberModel(dMarker2Value, null, null, xStep));
             dmarker3spinner.setModel(new SpinnerNumberModel(dMarker3Value, null, null, xStep));
             dmarker4spinner.setModel(new SpinnerNumberModel(dMarker4Value, null, null, xStep));
-            vmarker1spinner.setEditor(new JSpinner.NumberEditor(vmarker1spinner, "########0.######"));
-            vmarker2spinner.setEditor(new JSpinner.NumberEditor(vmarker2spinner, "########0.######"));
-            xwidthspinner.setEditor(new JSpinner.NumberEditor(xwidthspinner, "########0.######"));
-            xmaxspinner.setEditor(new JSpinner.NumberEditor(xmaxspinner, "########0.######"));
-            xminspinner.setEditor(new JSpinner.NumberEditor(xminspinner, "########0.######"));
-            mfmarker1spinner.setEditor(new JSpinner.NumberEditor(mfmarker1spinner, "########0.######"));
-            dmarker1spinner.setEditor(new JSpinner.NumberEditor(dmarker1spinner, "########0.######"));
-            dmarker2spinner.setEditor(new JSpinner.NumberEditor(dmarker2spinner, "########0.######"));
-            dmarker3spinner.setEditor(new JSpinner.NumberEditor(dmarker3spinner, "########0.######"));
-            dmarker4spinner.setEditor(new JSpinner.NumberEditor(dmarker4spinner, "########0.######"));
             Prefs.set("plot.xStep", xStep);
         });
 
@@ -9915,7 +10181,6 @@ public class MultiPlot_ implements PlugIn, KeyListener {
             if (Double.isNaN(value)) return;
             yMaxStep = value;
             ymaxspinner.setModel(new SpinnerNumberModel(yMax, null, null, yMaxStep));
-            ymaxspinner.setEditor(new JSpinner.NumberEditor(ymaxspinner, "########0.######"));
             Prefs.set("plot.yMaxStep", yMaxStep);
         });
 
@@ -9997,7 +10262,6 @@ public class MultiPlot_ implements PlugIn, KeyListener {
             if (Double.isNaN(value)) return;
             yMinStep = value;
             yminspinner.setModel(new SpinnerNumberModel(yMin, null, null, yMinStep));
-            yminspinner.setEditor(new JSpinner.NumberEditor(yminspinner, "########0.######"));
             Prefs.set("plot.yMinStep", yMinStep);
         });
 
@@ -10200,7 +10464,6 @@ public class MultiPlot_ implements PlugIn, KeyListener {
             if (Double.isNaN(value)) return;
             T0Step = value;
             T0spinner.setModel(new SpinnerNumberModel(T0, 0.0, null, T0Step));
-            T0spinner.setEditor(new JSpinner.NumberEditor(T0spinner, "########0.######"));
             Prefs.set("plot.T0Step", T0Step);
         });
 
@@ -10234,7 +10497,6 @@ public class MultiPlot_ implements PlugIn, KeyListener {
             if (Double.isNaN(value)) return;
             periodStep = value;
             periodspinner.setModel(new SpinnerNumberModel(period, 0.0001, null, periodStep));
-            periodspinner.setEditor(new JSpinner.NumberEditor(periodspinner, "########0.########"));
             Prefs.set("plot.periodStep", periodStep);
         });
 
@@ -10267,7 +10529,6 @@ public class MultiPlot_ implements PlugIn, KeyListener {
             if (Double.isNaN(value)) return;
             durationStep = value;
             durationspinner.setModel(new SpinnerNumberModel(duration, 0.0, null, durationStep));
-            durationspinner.setEditor(new JSpinner.NumberEditor(durationspinner, "########0.######"));
             Prefs.set("plot.durationStep", durationStep);
         });
 
@@ -10826,23 +11087,9 @@ public class MultiPlot_ implements PlugIn, KeyListener {
         TitledBorder mfmarker1border = BorderFactory.createTitledBorder(BorderFactory.createLineBorder(subBorderColor, 1), "Flip Time", TitledBorder.CENTER, TitledBorder.TOP, p11);
         mfmarker1panel.setBorder(mfmarker1border);
 
-        mfmarker1spinnermodel = new SpinnerNumberModel(mfMarker1Value, null, null, xStep);
-
-        mfmarker1spinner = new JSpinner(mfmarker1spinnermodel);
-        mfmarker1spinner.setFont(p11);
-        mfmarker1spinner.setEditor(new JSpinner.NumberEditor(mfmarker1spinner, "########0.######"));
-        mfmarker1spinner.setPreferredSize(new Dimension(75, 25));
-        mfmarker1spinner.setEnabled(true);
-        mfmarker1spinner.setComponentPopupMenu(xsteppopup);
-        mfmarker1spinner.setToolTipText("<html>" + "Enter meridian flip time in x-axis units" + "<br>" + "or enter UT time in HH:MM or HH:MM:SS format and press 'Enter'" + "<br>" + "---------------------------------------------" + "<br>" + "Right click to set spinner stepsize" + "</html>");
-        mfmarker1spinner.addChangeListener(ev -> {
-            showMFMarkersCB.setSelected(true);
-            checkForUT(mfmarker1spinner);
-            mfMarker1Value = (Double) mfmarker1spinner.getValue();
-            updatePlot(updateAllFits());
-        });
-        mfmarker1spinner.addMouseWheelListener(e -> mfmarker1spinner.setValue((Double) mfmarker1spinner.getValue() - e.getWheelRotation() * xStep));
-        mfmarker1panel.add(mfmarker1spinner);
+        meridianFlip.setFlipType(MeridianFlip.FlipType.MANUAL);
+        meridianFlip.setMeridianFlip(mfMarker1Value);
+        mfmarker1panel.add(meridianFlip.getDisplay());
 
         SpringUtil.makeCompactGrid(mfmarker1panel, 1, mfmarker1panel.getComponentCount(), 2, 2, 0, 0);
         mfmarkerpanel.add(mfmarker1panel);
@@ -11994,7 +12241,6 @@ public class MultiPlot_ implements PlugIn, KeyListener {
             detrendFactorStep[c][detrendVarDisplayed[c]] = value;
             Prefs.set("plot.detrendFactorStep[" + c + "][" + detrendVarDisplayed[c] + "]", detrendFactorStep[c][detrendVarDisplayed[c]]);
             detrendfactorspinner[c].setModel(new SpinnerNumberModel(detrendFactor[c][detrendVarDisplayed[c]], null, null, detrendFactorStep[c][detrendVarDisplayed[c]]));
-            detrendfactorspinner[c].setEditor(new JSpinner.NumberEditor(detrendfactorspinner[c], "########0.#########"));
         });
         detrendfactorsteplabel[c] = new JLabel("Stepsize:");
         detrendfactorsteppanel[c].add(detrendfactorsteplabel[c]);
@@ -12127,10 +12373,8 @@ public class MultiPlot_ implements PlugIn, KeyListener {
             force[c] = false;
             forcebox[c].setSelected(false);
             customscalespinner[c].setModel(new SpinnerNumberModel(customScaleFactor[c], null, null, customScaleStep[c]));
-            customscalespinner[c].setEditor(new JSpinner.NumberEditor(customscalespinner[c], "########0.#########"));
             customscalestepspinner[c].setValue(convertToText(customScaleStep[c]));
             customshiftspinner[c].setModel(new SpinnerNumberModel(customShiftFactor[c], null, null, customShiftStep[c]));
-            customshiftspinner[c].setEditor(new JSpinner.NumberEditor(customshiftspinner[c], "########0.#########"));
             ((JSpinner.DefaultEditor) customshiftspinner[c].getEditor()).getTextField().addMouseListener(shiftSpinnerMouseListener);
             customshiftstepspinner[c].setValue(convertToText(customShiftStep[c]));
             Prefs.set("plot.force" + c, force[c]);
@@ -12155,13 +12399,10 @@ public class MultiPlot_ implements PlugIn, KeyListener {
                 customShiftFactor[c] = 1.0;
             }
             customscalespinner[c].setModel(new SpinnerNumberModel(force[c] ? autoScaleFactor[c] * 100.0 : customScaleFactor[c], null, null, force[c] ? autoScaleStep[c] : customScaleStep[c]));
-            customscalespinner[c].setEditor(new JSpinner.NumberEditor(customscalespinner[c], "########0.#########"));
             customscalestepspinner[c].setValue(convertToText(force[c] ? autoScaleStep[c] : customScaleStep[c]));
             customshiftspinner[c].setModel(new SpinnerNumberModel(force[c] ? autoShiftFactor[c] * 100 : customShiftFactor[c], null, null, force[c] ? autoShiftStep[c] : customShiftStep[c]));
-            customshiftspinner[c].setEditor(new JSpinner.NumberEditor(customshiftspinner[c], "########0.#########"));
             ((JSpinner.DefaultEditor) customshiftspinner[c].getEditor()).getTextField().addMouseListener(shiftSpinnerMouseListener);
             residualShiftSpinner[c].setModel(new SpinnerNumberModel(force[c] ? autoResidualShift[c] * 100 : residualShift[c], null, null, force[c] ? autoShiftStep[c] : customShiftStep[c]));
-            residualShiftSpinner[c].setEditor(new JSpinner.NumberEditor(residualShiftSpinner[c], fitFormat));
             customshiftstepspinner[c].setValue(convertToText(force[c] ? autoShiftStep[c] : customShiftStep[c]));
             Prefs.set("plot.force" + c, force[c]);
             updatePlot(updateNoFits());
@@ -12220,7 +12461,6 @@ public class MultiPlot_ implements PlugIn, KeyListener {
                 Prefs.set("plot.customScaleStep" + c, customScaleStep[c]);
             }
             customscalespinner[c].setModel(new SpinnerNumberModel(force[c] ? autoScaleFactor[c] * 100 : customScaleFactor[c], null, null, force[c] ? autoScaleStep[c] : customScaleStep[c]));
-            customscalespinner[c].setEditor(new JSpinner.NumberEditor(customscalespinner[c], "########0.#########"));
         });
         customscalesteplabel[c] = new JLabel("Stepsize:");
         customscalesteppanel[c].add(customscalesteplabel[c]);
@@ -12342,7 +12582,6 @@ public class MultiPlot_ implements PlugIn, KeyListener {
                     Prefs.set("plot.customShiftStep" + curve, customShiftStep[curve]);
                 }
                 customshiftspinner[curve].setModel(new SpinnerNumberModel(force[curve] ? autoShiftFactor[curve] * 100 : customShiftFactor[curve], null, null, force[curve] ? invertYAxisSign * autoShiftStep[curve] : invertYAxisSign * customShiftStep[curve]));
-                customshiftspinner[curve].setEditor(new JSpinner.NumberEditor(customshiftspinner[curve], "########0.#########"));
                 ((JSpinner.DefaultEditor) customshiftspinner[curve].getEditor()).getTextField().addMouseListener(shiftSpinnerMouseListener);
                 customshiftstepspinner[curve].setValue(convertToText(force[curve] ? autoShiftStep[curve] : customShiftStep[curve]));
             }
@@ -12686,7 +12925,6 @@ public class MultiPlot_ implements PlugIn, KeyListener {
             orbitalPeriodStep = value;
             for (int c = 0; c < maxCurves; c++) {
                 orbitalPeriodSpinner[c].setModel(new SpinnerNumberModel(orbitalPeriod[c], 0.001, null, orbitalPeriodStep));
-                orbitalPeriodSpinner[c].setEditor(new JSpinner.NumberEditor(orbitalPeriodSpinner[c], "####0.##########"));
             }
             Prefs.set("plot.orbitalPeriodStep", orbitalPeriodStep);
         });
@@ -12722,7 +12960,6 @@ public class MultiPlot_ implements PlugIn, KeyListener {
             eccentricityStep = value;
             for (int c = 0; c < maxCurves; c++) {
                 eccentricitySpinner[c].setModel(new SpinnerNumberModel(Double.valueOf(eccentricity[c]), Double.valueOf(0), Double.valueOf(1), Double.valueOf(eccentricityStep)));
-                eccentricitySpinner[c].setEditor(new JSpinner.NumberEditor(eccentricitySpinner[c], "####0.##########"));
             }
             Prefs.set("plot.eccentricityStep", eccentricityStep);
         });
@@ -12758,7 +12995,6 @@ public class MultiPlot_ implements PlugIn, KeyListener {
             omegaStep = value;
             for (int c = 0; c < maxCurves; c++) {
                 omegaSpinner[c].setModel(new SpinnerNumberModel(Double.valueOf(omega[c]), Double.valueOf(-360.0), Double.valueOf(360.0), Double.valueOf(omegaStep)));
-                omegaSpinner[c].setEditor(new JSpinner.NumberEditor(omegaSpinner[c], "####0.##########"));
             }
             Prefs.set("plot.omegaStep", omegaStep);
         });
@@ -12795,7 +13031,6 @@ public class MultiPlot_ implements PlugIn, KeyListener {
             teffStep = value;
             for (int c = 0; c < maxCurves; c++) {
                 teffSpinner[c].setModel(new SpinnerNumberModel(Double.valueOf(teff[c]), Double.valueOf(IJU.tStar[IJU.tStar.length - 1]), Double.valueOf(IJU.tStar[0]), Double.valueOf(teffStep)));
-                teffSpinner[c].setEditor(new JSpinner.NumberEditor(teffSpinner[c], "####0"));
             }
             Prefs.set("plot.teffStep", teffStep);
         });
@@ -12831,7 +13066,6 @@ public class MultiPlot_ implements PlugIn, KeyListener {
             jminuskStep = value;
             for (int c = 0; c < maxCurves; c++) {
                 jminuskSpinner[c].setModel(new SpinnerNumberModel((Double) jminuskSpinner[c].getValue(), Double.valueOf(IJU.JminusK[0]), Double.valueOf(IJU.JminusK[IJU.JminusK.length - 1]), Double.valueOf(jminuskStep)));
-                jminuskSpinner[c].setEditor(new JSpinner.NumberEditor(jminuskSpinner[c], "#0.000"));
             }
             Prefs.set("plot.jminuskStep", jminuskStep);
         });
@@ -12867,7 +13101,6 @@ public class MultiPlot_ implements PlugIn, KeyListener {
             mStarStep = value;
             for (int c = 0; c < maxCurves; c++) {
                 mStarSpinner[c].setModel(new SpinnerNumberModel((Double) mStarSpinner[c].getValue(), Double.valueOf(IJU.mStar[IJU.mStar.length - 1]), Double.valueOf(IJU.mStar[0]), Double.valueOf(mStarStep)));
-                mStarSpinner[c].setEditor(new JSpinner.NumberEditor(mStarSpinner[c], "#0.000"));
             }
             Prefs.set("plot.mStarStep", mStarStep);
         });
@@ -12903,7 +13136,6 @@ public class MultiPlot_ implements PlugIn, KeyListener {
             rStarStep = value;
             for (int c = 0; c < maxCurves; c++) {
                 rStarSpinner[c].setModel(new SpinnerNumberModel((Double) rStarSpinner[c].getValue(), Double.valueOf(IJU.rStar[IJU.rStar.length - 1]), Double.valueOf(IJU.rStar[0]), Double.valueOf(rStarStep)));
-                rStarSpinner[c].setEditor(new JSpinner.NumberEditor(rStarSpinner[c], "#0.000"));
             }
             Prefs.set("plot.rStarStep", rStarStep);
         });
@@ -12939,7 +13171,6 @@ public class MultiPlot_ implements PlugIn, KeyListener {
             rhoStarStep = value;
             for (int c = 0; c < maxCurves; c++) {
                 rhoStarSpinner[c].setModel(new SpinnerNumberModel((Double) rhoStarSpinner[c].getValue(), Double.valueOf(IJU.rhoStar[0]), Double.valueOf(IJU.rhoStar[IJU.rhoStar.length - 1]), Double.valueOf(rhoStarStep)));
-                rhoStarSpinner[c].setEditor(new JSpinner.NumberEditor(rhoStarSpinner[c], "#0.000"));
             }
             Prefs.set("plot.rhoStarStep", rhoStarStep);
         });
@@ -12999,7 +13230,6 @@ public class MultiPlot_ implements PlugIn, KeyListener {
                 } else {
                     priorCenterSpinner[c][p].setModel(new SpinnerNumberModel(priorCenter[c][p], null, null, priorCenterStep[p]));
                 }
-                priorCenterSpinner[c][p].setEditor(new JSpinner.NumberEditor(priorCenterSpinner[c][p], fitFormat));
             }
             Prefs.set("plot.priorCenterStep[" + p + "]", priorCenterStep[p]);
         });
@@ -13033,7 +13263,6 @@ public class MultiPlot_ implements PlugIn, KeyListener {
             priorWidthStep[p] = value;
             for (int c = 0; c < maxCurves; c++) {
                 priorWidthSpinner[c][p].setModel(new SpinnerNumberModel(priorWidth[c][p], 0.0, null, priorWidthStep[p]));
-                priorWidthSpinner[c][p].setEditor(new JSpinner.NumberEditor(priorWidthSpinner[c][p], fitFormat));
             }
             Prefs.set("plot.priorWidthStep[" + p + "]", priorWidthStep[p]);
         });
@@ -13067,7 +13296,6 @@ public class MultiPlot_ implements PlugIn, KeyListener {
             fitStepStep[p] = value;
             for (int c = 0; c < maxCurves; c++) {
                 fitStepSpinner[c][p].setModel(new SpinnerNumberModel(fitStep[c][p], 0.0, null, fitStepStep[p]));
-                fitStepSpinner[c][p].setEditor(new JSpinner.NumberEditor(fitStepSpinner[c][p], fitFormat));
             }
             Prefs.set("plot.fitStepStep[" + p + "]", fitStepStep[p]);
         });
@@ -16023,18 +16251,27 @@ public class MultiPlot_ implements PlugIn, KeyListener {
             closeRefStarFrame();
         } else {
             updateColumnLists();
+            var needsNewCols = !Arrays.equals(oldUnfilteredColumns, unfilteredColumns) && columns != null;
             oldUnfilteredColumns = unfilteredColumns.clone();
-            xdatacolumndefault.setModel(new DefaultComboBoxModel<>(columns));
+            if (needsNewCols) {
+                xdatacolumndefault.setModel(new DefaultComboBoxModel<>(columns));
+            }
             xdatacolumndefault.setSelectedItem(xlabeldefault);
             xdatacolumndefault.repaint();
             for (int c = 0; c < maxCurves; c++) {
-                xdatacolumn[c].setModel(new DefaultComboBoxModel<>(columnswd));
+                if (needsNewCols) {
+                    xdatacolumn[c].setModel(new DefaultComboBoxModel<>(columnswd));
+                }
                 xdatacolumn[c].setSelectedItem(xlabel[c]);
                 disableUpdatePlotBox = true;   //disable automatic enable of plot when a new data column has been selected
-                ydatacolumn[c].setModel(new DefaultComboBoxModel<>(columns));
+                if (needsNewCols) {
+                    ydatacolumn[c].setModel(new DefaultComboBoxModel<>(columns));
+                }
                 ydatacolumn[c].setSelectedItem(ylabel[c]);
                 disableUpdatePlotBox = false;
-                operatorcolumn[c].setModel(new DefaultComboBoxModel<>(columns));
+                if (needsNewCols) {
+                    operatorcolumn[c].setModel(new DefaultComboBoxModel<>(columns));
+                }
                 operatorcolumn[c].setSelectedItem(oplabel[c]);
                 detrendbox[c].setModel(new DefaultComboBoxModel<>(columnsDetrend));
                 detrendbox[c].setSelectedItem(detrendlabel[c][detrendVarDisplayed[c]]);
@@ -18556,6 +18793,8 @@ public class MultiPlot_ implements PlugIn, KeyListener {
         JDColumn = Prefs.get("plot2.JDColumn", JDColumn);
         raColumn = Prefs.get("plot2.raColumn", raColumn);
         decColumn = Prefs.get("plot2.decColumn", decColumn);
+        latColumn = Prefs.get("plot2.latColumn", latColumn);
+        lonColumn = Prefs.get("plot2.lonColumn", lonColumn);
 
         addAirmass = Prefs.get("plot2.addAirmass", addAirmass);
         addAltitude = Prefs.get("plot2.addAltitude", addAltitude);
@@ -18594,6 +18833,7 @@ public class MultiPlot_ implements PlugIn, KeyListener {
         unscale = Prefs.get("plot2.unscale", unscale);
         unshift = Prefs.get("plot2.unshift", unshift);
         useTableRaDec = Prefs.get("plot2.useTableRaDec", useTableRaDec);
+        useTableLatLon = Prefs.get("plot2.useTableLatLon", useTableLatLon);
         maxSubsetColumns = (int) Prefs.get("plot2.maxSubsetColumns", maxSubsetColumns);
         modifyCurvesAbove = Prefs.get("plot2.modifyCurvesAbove", modifyCurvesAbove);
         modifyCurvesBelow = Prefs.get("plot2.modifyCurvesBelow", modifyCurvesBelow);
@@ -18936,12 +19176,15 @@ public class MultiPlot_ implements PlugIn, KeyListener {
         Prefs.set("plot2.JDColumn", JDColumn);
         Prefs.set("plot2.raColumn", raColumn);
         Prefs.set("plot2.decColumn", decColumn);
+        Prefs.set("plot2.latColumn", latColumn);
+        Prefs.set("plot2.lonColumn", lonColumn);
         Prefs.set("plot2.useGJD", useGJD);
         Prefs.set("plot2.useHJD", useHJD);
         Prefs.set("plot2.useBJD", useBJD);
         Prefs.set("plot2.unscale", unscale);
         Prefs.set("plot2.unshift", unshift);
         Prefs.set("plot2.useTableRaDec", useTableRaDec);
+        Prefs.set("plot2.useTableLatLon", useTableLatLon);
         Prefs.set("plot2.autoAstroDataUpdate", autoAstroDataUpdate);
     }
 
@@ -19196,6 +19439,20 @@ public class MultiPlot_ implements PlugIn, KeyListener {
                 Prefs.set("plot.displayBinMinutes[" + i +"]", minutes.get(i).first());
                 Prefs.set("plot.displayBin[" + i +"]", binDisplay[i].name());
             }
+        }
+    }
+
+    private record ColCalcKey(String colName, int mfColHash, int xColHash) {
+        static ColCalcKey create(MeasurementTable table, String xColName) {
+            int mfColId = table.getColumnIndex(MeridianFlip.FLIP_COL.get());
+            int xColId = table.getColumnIndex(xColName);
+            if (mfColId == ResultsTable.COLUMN_NOT_FOUND || xColId == ResultsTable.COLUMN_NOT_FOUND) {
+                return null;
+            }
+            return new ColCalcKey(MeridianFlip.FLIP_COL.get(),
+                    Arrays.hashCode(table.bulkGetColumnAsDoubles(mfColId)),
+                    Arrays.hashCode(table.bulkGetColumnAsDoubles(xColId))
+            );
         }
     }
 }

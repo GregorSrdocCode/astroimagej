@@ -2,13 +2,17 @@
 
 package astroj;
 
+import java.util.Arrays;
+import java.util.Calendar;
+import java.util.Date;
+import java.util.GregorianCalendar;
+import java.util.Properties;
+
 import ij.IJ;
 import ij.ImagePlus;
 import ij.ImageStack;
 import ij.WindowManager;
 import ij.util.Tools;
-
-import java.util.*;
 
 /**
  * A collection of helpful static methods to read, manipulate, write, and query FITS-based images within ImageJ.
@@ -1236,6 +1240,26 @@ public class FitsJ {
 		if (s.startsWith("'") && s.endsWith("'")) {
 			s = s.substring(1, l - 1);
 		}
+
+		/*
+			Examples of sexagesimal formats matched by the regex:
+				12:34:56.78
+				12h34m56s.78
+				12h34m56.78s
+				12 34 56.78
+				12h 34m56s.78
+				12h 34m 56s.78
+				12h34m 56s.78
+				+45° 30′ 15.5''
+				+45°30′15.5''
+				12h 34m56.78s
+				+45°30′15″.5
+				12h34m
+		*/
+		if (!s.matches("(?<hours>[+-]?\\d{1,2})[h:°]?\\s*(?<mins>\\d{1,2})(?:[m:'′]?\\s*(?<secs>\\d{1,2}(?:(?:\\.\\d+)?(?:s|''|\"|″)?|(?:s|''|\"|″)\\.\\d+)?)?)?(?:s|''|\"|″)?\\s*$")) {
+			return Double.NaN;
+		}
+
         String[] pieces = s.replaceAll("[\\-][^0-9\\.]{0,}", " \\-").replaceAll("[+][^0-9\\.]{0,}", " +").replaceAll("[^0-9\\.\\-+]{1,}", " ").trim().split("[^0-9\\.\\-+]{1,}");
         if (pieces.length > 0) {
             d = Tools.parseDouble(pieces[0]);
@@ -1323,6 +1347,20 @@ public class FitsJ {
 			return false;
 		}
     }
+
+	/**
+	 * Finds and extracts a String value from a FITS header stored in a String array.
+	 *
+	 * @param key   The FITS keyword that should be found and parsed.
+	 * @param hdr The FITS header.
+	 */
+	public static String findStringValue(String key, Header hdr) throws NumberFormatException {
+		int icard = findCardWithKey(key, hdr);
+		if (icard < 0) {
+			return null;
+		}
+		return getCardStringValue(hdr.cards[icard]);
+	}
 
     /**
      * Finds and extracts a double value from a FITS header stored in a String array.
