@@ -10,12 +10,14 @@ import java.awt.image.ColorModel;
 import java.io.File;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Properties;
 import java.util.Vector;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.Semaphore;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import ij.IJ;
 import ij.ImagePlus;
@@ -27,6 +29,7 @@ import ij.astro.AstroImageJ;
 import ij.astro.io.prefs.Property;
 import ij.astro.logging.AIJLogger;
 import ij.astro.types.Pair;
+import ij.astro.util.FitsExtensionUtil;
 import ij.astro.util.ZipOpenerUtil;
 import ij.gui.GenericDialog;
 import ij.gui.Overlay;
@@ -73,13 +76,16 @@ public class FolderOpener implements PlugIn, TextListener {
 	private boolean openAsSeparateImages;
 	private boolean runningOpen;
 	private TextField dirField, filterField, startField, countField, stepField;
+	@AstroImageJ(reason = "Multithread FolderOpening")
+	private final AtomicInteger progressCounter = new AtomicInteger(0);
 	@AstroImageJ(reason = "Allow FITS reader to track virtual stack")
 	public static boolean virtualIntended;
 	@AstroImageJ(reason = "Setup automatic wcs shape generation")
 	public static final Property<Boolean> AUTOMATIC_WCS_SHAPE_GENERATION = new Property<>(false, FolderOpener.class);
-	private boolean enableMT;
-	private int maxThreads;
-	private boolean useVirtualThreads;
+	@AstroImageJ(reason = "Multithread FolderOpening")
+	private static final Property<Boolean> ENABLE_MT = new Property<>(true, FolderOpener.class);
+	@AstroImageJ(reason = "Multithread FolderOpening")
+	private static final int MAX_THREADS = getThreadCount();
 
 	
 	/** Opens the images in the specified directory as a stack. Displays
@@ -160,7 +166,6 @@ public class FolderOpener implements PlugIn, TextListener {
             """,
 			modified = true)
 	public void run(String arg) {
-		var t0 = System.currentTimeMillis();
 		boolean isMacro = Macro.getOptions()!=null;
 		if (!directorySet)
 			directory = null;
@@ -285,7 +290,7 @@ public class FolderOpener implements PlugIn, TextListener {
 				return;
 			}
 			IJ.showStatus("");
-			t0 = System.currentTimeMillis();
+			var t0 = System.currentTimeMillis();
 			if (dicomImages && !IJ.isMacOSX() && !sortFileNames)
 				list = StringSorter.sortNumerically(list);
 
@@ -315,27 +320,23 @@ public class FolderOpener implements PlugIn, TextListener {
 				indices[k] = idxList.get(k);
 			}
 
-			var multithreadOpen = !openAsVirtualStack && indices.length>1 && enableMT;
+			var multithreadOpen = !openAsVirtualStack && !openAsSeparateImages && indices.length>1 &&
+					ENABLE_MT.get() && Arrays.stream(list).allMatch(FitsExtensionUtil::isFitsFile);
 
 			// Setup multithreaded run
 			ExecutorService openExecutor = null;
 			Future<ImagePlus>[] openFutures = null;
 			Semaphore openSemaphore = null;
 			var nextToSubmit = 0;
-			var prefetchWindow = 1;
 			if (multithreadOpen) {
-				var nThreads = Math.clamp(Runtime.getRuntime().availableProcessors(), 1, maxThreads);
+				var nThreads = Math.clamp(Runtime.getRuntime().availableProcessors()-1, 1, MAX_THREADS);
 				nThreads = Math.min(nThreads, indices.length);
-				if (useVirtualThreads) {
-					openExecutor = Executors.newVirtualThreadPerTaskExecutor();
-				} else {
-					openExecutor = Executors.newFixedThreadPool(nThreads);
-				}
+				openExecutor = Executors.newFixedThreadPool(nThreads);
 
 				openFutures = new Future[indices.length];
 				IJ.redirectErrorMessages(true);
 
-				openSemaphore = new Semaphore(maxThreads, true);
+				openSemaphore = new Semaphore(MAX_THREADS, true);
 
 				submitOpen(openExecutor, openSemaphore, openFutures, nextToSubmit++, indices, list, directory);
 			}
@@ -499,8 +500,9 @@ public class FolderOpener implements PlugIn, TextListener {
 						}
 					}
 					count++;
-					IJ.showStatus("!"+count+"/"+this.nFiles);
-					IJ.showProgress(count, this.nFiles);
+					var progress = multithreadOpen ? progressCounter.get() : count;
+					IJ.showStatus("!"+progress+"/"+this.nFiles);
+					IJ.showProgress(progress, this.nFiles);
 					if (count>=this.nFiles)
 						break;
 					if (IJ.escapePressed())
@@ -621,8 +623,10 @@ public class FolderOpener implements PlugIn, TextListener {
 		}
 		virtualIntended = false;
 		FITS_Reader.resetFilter();
-		IO.println("FolderOpener: "+(System.currentTimeMillis()-t0)/1000.0+" seconds" +
-				(enableMT ? " (MT"+(useVirtualThreads ? " virtual" : "")+" maxThreads: " + maxThreads +")" : ""));
+		ZipOpenerUtil.closeZipFile(directory);
+		/*IO.println("FolderOpener: "+(System.currentTimeMillis()-t0)/1000.0+" seconds" +
+				(ENABLE_MT.get() ? " (MT"+" maxThreads: " + MAX_THREADS +")" : ""));
+		IO.println("FMA Enabled: " + Boolean.getBoolean("nom.tam.fits.useFMA"));*/
 	}
 
 
@@ -664,6 +668,7 @@ public class FolderOpener implements PlugIn, TextListener {
 		return info!=null && !(info.startsWith("Software")||info.startsWith("ImageDescription"));
 	 }
 
+	@AstroImageJ(reason = "Multithread FolderOpening")
 	private void submitOpen(ExecutorService executor, Semaphore openSemaphore, Future<ImagePlus>[] futures, int pos, int[] indices, String[] list, String directory) {
 		final var name = list[indices[pos]];
 		if ("RoiSet.zip".equals(name)) {
@@ -680,7 +685,11 @@ public class FolderOpener implements PlugIn, TextListener {
             }
             var opener = new Opener();
 			opener.setSilentMode(true);
-			return opener.openTempImage(directory, name);
+			ImagePlus imagePlus = opener.openTempImage(directory, name);
+			var progress = progressCounter.incrementAndGet();
+			IJ.showStatus("!"+progress+"/"+this.nFiles);
+			IJ.showProgress(progress, nFiles);
+			return imagePlus;
 		});
 	}
 
@@ -711,8 +720,14 @@ public class FolderOpener implements PlugIn, TextListener {
 		}
 	}
 
-	@AstroImageJ(reason = "Save preference option to open as virtual stack; widen access; support zip files as folder;" +
-			"Add filter count; Make Prefs defaultDirectory use parent folder",
+	@AstroImageJ(reason = """
+            Save preference option to open as virtual stack;
+            widen access; 
+            support zip files as folder;
+            Add filter count;
+            Make Prefs defaultDirectory use parent folder
+            Multithread FolderOpening
+            """,
 			modified = true)
 	public boolean showDialog() {
 		String options = Macro.getOptions();
@@ -784,7 +799,8 @@ public class FolderOpener implements PlugIn, TextListener {
 		gd.addCheckbox("Sort names numerically", sortFileNames);
 		gd.addCheckbox("Generate WCS Common Region", AUTOMATIC_WCS_SHAPE_GENERATION.get());
 		gd.addCheckbox("Use virtual stack", Prefs.get("folderopener.openAsVirtualStack", openAsVirtualStack));
-		gd.addCheckbox("Open as separate images", false);		
+		gd.addCheckbox("Open as separate images", false);
+		gd.addCheckbox("Multithreaded Opening", ENABLE_MT.get());
 		gd.addHelp(IJ.URL2+"/docs/menus/file.html#seq1");
 
 		// Add display of stack size
@@ -793,13 +809,6 @@ public class FolderOpener implements PlugIn, TextListener {
 		var filterCountDisplay = (Label) gd.getComponent(gd.getComponentCount() - 1);
 		gd.addMessage("Estimated stack size: " + initialSizes.second() + " MB");
 		var filterSizeDisplay = (Label) gd.getComponent(gd.getComponentCount() - 1);
-
-		// Experimental Options
-		{
-			gd.addCheckbox("Multithreaded Opening", false);
-			gd.addCheckbox("Use Virtual Threads", false);
-			gd.addNumericField("Max Threads", Runtime.getRuntime().availableProcessors(), 0);
-		}
 
 		for (Object stringField : gd.getStringFields()) {
 			((TextField) stringField).addTextListener(_ -> {
@@ -846,13 +855,7 @@ public class FolderOpener implements PlugIn, TextListener {
 		if (openAsVirtualStack)
 			scale = 100.0;
 		openAsSeparateImages = gd.getNextBoolean();
-
-		// Experimental Options
-		{
-			enableMT = gd.getNextBoolean();
-			useVirtualThreads = gd.getNextBoolean();
-			maxThreads = (int)gd.getNextNumber();
-		}
+		ENABLE_MT.set(gd.getNextBoolean());
 
 		if (openAsSeparateImages)
 			openAsVirtualStack = true;
@@ -1166,6 +1169,12 @@ public class FolderOpener implements PlugIn, TextListener {
 			return Integer.parseInt(s);
 		} catch (NumberFormatException ignored) {}
 		return fallback;
+	}
+
+	@AstroImageJ(reason = "Multithread FolderOpening")
+	private static int getThreadCount() {
+		final int maxRealThreads = Runtime.getRuntime().availableProcessors();
+		return Math.max(1 + (maxRealThreads / 3), maxRealThreads - 4);
 	}
 
 } // FolderOpener
