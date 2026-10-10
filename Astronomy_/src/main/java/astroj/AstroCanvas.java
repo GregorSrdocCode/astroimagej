@@ -1,18 +1,19 @@
 package astroj;
 
-import java.awt.AlphaComposite;
-import java.awt.BasicStroke;
-import java.awt.Color;
-import java.awt.Cursor;
-import java.awt.Font;
-import java.awt.FontMetrics;
-import java.awt.Graphics;
-import java.awt.Graphics2D;
-import java.awt.Image;
-import java.awt.Point;
-import java.awt.Rectangle;
-import java.awt.RenderingHints;
-import java.awt.Toolkit;
+import Astronomy.shapes.WcsShape;
+import ij.IJ;
+import ij.ImagePlus;
+import ij.Prefs;
+import ij.astro.util.PixelPatcher;
+import ij.gui.Arrow;
+import ij.gui.ImageWindow;
+import ij.gui.Roi;
+import ij.gui.Toolbar;
+import ij.plugin.tool.PlugInTool;
+import util.prefs.RegionExclusion;
+
+import javax.swing.*;
+import java.awt.*;
 import java.awt.event.MouseEvent;
 import java.awt.font.FontRenderContext;
 import java.awt.geom.AffineTransform;
@@ -22,19 +23,6 @@ import java.awt.image.BufferStrategy;
 import java.awt.image.MemoryImageSource;
 import java.text.DecimalFormat;
 import java.util.Locale;
-
-import javax.swing.SwingUtilities;
-
-import Astronomy.shapes.WcsShape;
-import ij.IJ;
-import ij.ImagePlus;
-import ij.Prefs;
-import ij.gui.Arrow;
-import ij.gui.ImageWindow;
-import ij.gui.Roi;
-import ij.gui.Toolbar;
-import ij.plugin.tool.PlugInTool;
-import util.prefs.RegionExclusion;
 
 public class AstroCanvas extends OverlayCanvas {
 
@@ -144,6 +132,7 @@ public class AstroCanvas extends OverlayCanvas {
         RegionExclusion.BORDER_EXCLUSION_RIGHT.addListener(this, (_, _) -> updateDisplay());
         RegionExclusion.DISPLAY_EXCLUDED_REGIONS.addListener(this, (_, _) -> updateDisplay());
         RegionExclusion.EXCLUDE_UNCOMMON_REGION.addListener(this, (_, _) -> updateDisplay());
+        PixelPatcher.DISPLAY.addListener(this, (_, _) -> updateDisplay());
     }
 
     private void updateDisplay() {
@@ -683,6 +672,10 @@ public class AstroCanvas extends OverlayCanvas {
         if (RegionExclusion.DISPLAY_EXCLUDED_REGIONS.get()) {
             drawExcludedRegions((Graphics2D) drawingGraphics);
         }
+
+        if (PixelPatcher.DISPLAY.get()) {
+            drawBadPixels((Graphics2D) drawingGraphics);
+        }
         
         transEnabled = false;
 
@@ -773,6 +766,43 @@ public class AstroCanvas extends OverlayCanvas {
                 a.subtract(stroked);
                 g2.fill(aijTransform.createTransformedShape(a));
             }
+        }
+
+        g2.setComposite(comp);
+        g2.setTransform(canvTrans);
+    }
+
+    private void drawBadPixels(Graphics2D g2) {
+        var badPixels = imp.getProcessor().getBadPixels();
+        if (badPixels == null || badPixels.isEmpty()) {
+            return;
+        }
+
+        g2.setTransform(invCanvTrans);
+
+        g2.setColor(new Color(250, 229, 0));
+        var comp = g2.getComposite();
+        g2.setComposite(AlphaComposite.getInstance(AlphaComposite.SRC_OVER, 0.50f));
+
+        for (var badPixel : badPixels) {
+            var x1 = screenX(badPixel.x());
+            var x2 = screenX(badPixel.x() + 1);
+            var y1 = screenY(badPixel.y());
+            var y2 = screenY(badPixel.y() + 1);
+
+            switch (badPixel) {
+                case PixelPatcher.BpmPixel.Pixel _ -> {
+                    g2.setColor(new Color(250, 229, 0));
+                }
+                case PixelPatcher.BpmPixel.SourcePixel _ -> {
+                    g2.setColor(new Color(200, 128, 128));
+                }
+                case PixelPatcher.BpmPixel.UncorrectedPixel _ -> {
+                    g2.setColor(new Color(174, 22, 19));
+                }
+            }
+
+            g2.fillRect(Math.min(x1, x2), Math.min(y1, y2), Math.max(1, Math.abs(x2 - x1)), Math.max(1, Math.abs(y2 - y1)));
         }
 
         g2.setComposite(comp);

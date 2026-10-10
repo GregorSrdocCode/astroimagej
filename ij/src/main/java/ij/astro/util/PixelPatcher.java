@@ -1,0 +1,304 @@
+package ij.astro.util;
+
+import ij.astro.gui.ToolTipProvider;
+import ij.astro.io.pixel_maps.BpmFile;
+import ij.astro.io.prefs.Property;
+import ij.astro.logging.AIJLogger;
+import ij.process.ImageProcessor;
+
+import java.util.*;
+import java.util.stream.Collectors;
+import java.util.stream.IntStream;
+
+public interface PixelPatcher {
+    Property<PatchType.Type> TYPE = new Property<>(PatchType.Type.PASS_THROUGH, PixelPatcher.class, t -> {
+        if (t.disabled) {
+            AIJLogger.log("Bad Pixel Map set to Pass Through as the previous option is disabled.");
+            return PatchType.Type.PASS_THROUGH;
+        }
+        return t;
+    });
+    Property<Boolean> DISPLAY = new Property<>(true, PixelPatcher.class);
+    /// If the BPM should be preserved for display.
+    Property<Boolean> PRESERVE_BPM = new Property<>(true, PixelPatcher.class);
+    Property<Boolean> PRESERVE_BPM_SOURCE_PIXELS = new Property<>(true, PixelPatcher.class);
+    Property<Boolean> IGNORE_BORDERS = new Property<>(false, PixelPatcher.class);
+    Property<String> BPM_FILE_SOURCE = new Property<>("", PixelPatcher.class);
+    Property<PatchTypeSource> BPM_MODE = new Property<>(PatchTypeSource.DISABLED, PixelPatcher.class);
+    Property<Integer> REGION_LIMIT = new Property<>(10_000, PixelPatcher.class);
+
+    void patch(ImageProcessor ip, Mask mask);
+
+    sealed interface PatchType {
+        Property.PropertyLoadValidator<Integer> PIXEL_RANGE = (d) -> (d < 0) ? 0 : d;
+        Property.PropertyChangeValidator<Integer> PIXEL_RANGE_CHANGE = (_, o, n) -> (n < 0) ? o : n;
+
+        record PassThrough() implements PatchType {}
+        record FitPlane() implements PatchType {}
+        record FitGaussian(int minCount) implements PatchType {
+            public static final Property<Integer> MIN_COUNT = new Property<>(20, FitGaussian.class);
+
+            public FitGaussian() {
+                this(MIN_COUNT.get());
+            }
+        }
+        record FitMoffat(int minCount, int maxIter, double relErr, double absErr) implements PatchType {
+            public static final Property<Integer> MIN_COUNT = new Property<>(20, FitMoffat.class);
+            public static final Property<Integer> MAX_ITER = new Property<>(3000, FitMoffat.class);
+            public static final Property<Double> REL_ERR = new Property<>(1e-8, FitMoffat.class);
+            public static final Property<Double> ABS_ERR = new Property<>(1e-8, FitMoffat.class);
+
+            public FitMoffat() {
+                this(MIN_COUNT.get(), MAX_ITER.get(), REL_ERR.get(), ABS_ERR.get());
+            }
+        }
+        record NearestNeighbor(MergeType mergeType) implements PatchType {
+            public static final Property<MergeType> MERGE_TYPE = new Property<>(MergeType.FIRST_NEAREST_NEIGHBOR, NearestNeighbor.class);
+
+            public NearestNeighbor() {
+                this(MERGE_TYPE.get());
+            }
+
+            public enum MergeType implements ToolTipProvider {
+                FIRST_NEAREST_NEIGHBOR,
+                MEDIAN,
+                AVERAGE,
+                ;
+
+
+                @Override
+                public String getToolTip() {
+                    return "test";
+                }
+            }
+        }
+        record ConstantValue(double value) implements PatchType {
+            public static final Property<Double> VALUE = new Property<>(Double.NaN, ConstantValue.class);
+
+            public ConstantValue() {
+                this(VALUE.get());
+            }
+        }
+        record FloodFill(boolean useMedian) implements PatchType {
+            public static final Property<Boolean> USE_MEDIAN = new Property<>(false, FloodFill.class);
+
+            public FloodFill() {
+                this(USE_MEDIAN.get());
+            }
+        }
+        record AverageFill(int xRadius, int yRadius) implements PatchType {
+            public static final Property<Integer> X_RADIUS = new Property<>(1, AverageFill.class);
+            public static final Property<Integer> Y_RADIUS = new Property<>(1, AverageFill.class);
+
+            static {
+                X_RADIUS.setLoadValidator(PIXEL_RANGE);
+                X_RADIUS.setChangeValidator(PIXEL_RANGE_CHANGE);
+                Y_RADIUS.setLoadValidator(PIXEL_RANGE);
+                Y_RADIUS.setChangeValidator(PIXEL_RANGE_CHANGE);
+            }
+
+            public AverageFill() {
+                this(X_RADIUS.get(), Y_RADIUS.get());
+            }
+        }
+        record MedianFill(int xRadius, int yRadius) implements PatchType {
+            public static final Property<Integer> X_RADIUS = new Property<>(1, MedianFill.class);
+            public static final Property<Integer> Y_RADIUS = new Property<>(1, MedianFill.class);
+
+            static {
+                X_RADIUS.setLoadValidator(PIXEL_RANGE);
+                X_RADIUS.setChangeValidator(PIXEL_RANGE_CHANGE);
+                Y_RADIUS.setLoadValidator(PIXEL_RANGE);
+                Y_RADIUS.setChangeValidator(PIXEL_RANGE_CHANGE);
+            }
+
+            public MedianFill() {
+                this(X_RADIUS.get(), Y_RADIUS.get());
+            }
+        }
+        //todo PSF option
+
+        default Type toType() {
+            return switch (this) {
+                case AverageFill averageFill -> Type.AVERAGE_FILL;
+                case ConstantValue constantValue -> Type.CONSTANT_VALUE;
+                case FitGaussian fitGaussian -> Type.FIT_GAUSSIAN;
+                case FitMoffat fitMoffat -> Type.FIT_MOFFAT;
+                case FitPlane fitPlane -> Type.FIT_PLANE;
+                case FloodFill floodFill -> Type.FLOOD_FILL;
+                case MedianFill medianFill -> Type.MEDIAN_FILL;
+                case NearestNeighbor nearestNeighbor -> Type.NEAREST_NEIGHBOR;
+                case PassThrough passThrough -> Type.PASS_THROUGH;
+            };
+        }
+
+        enum Type {
+            AVERAGE_FILL("Average Fill"),
+            MEDIAN_FILL("Median Fill"),
+            FLOOD_FILL("Flood Fill"),
+            FIT_PLANE("Fit Plane"),
+            CONSTANT_VALUE("Constant Value"),
+            NEAREST_NEIGHBOR("Nearest Neighbor"),
+            FIT_GAUSSIAN(true, "Guassian"),
+            FIT_MOFFAT(true, "Moffat"),
+            PASS_THROUGH("Disabled"),
+            ;
+
+            public final boolean disabled;
+            private final String displayName;
+
+            Type(String displayName) {
+                this(false, displayName);
+            }
+
+            Type(boolean disabled, String displayName) {
+                this.disabled = disabled;
+                this.displayName = displayName;
+            }
+
+            public PatchType toPatchType() {
+                return switch (this) {
+                    case AVERAGE_FILL -> new AverageFill();
+                    case MEDIAN_FILL -> new MedianFill();
+                    case FLOOD_FILL -> new FloodFill();
+                    case FIT_PLANE -> new FitPlane();
+                    case CONSTANT_VALUE -> new ConstantValue();
+                    case NEAREST_NEIGHBOR -> new NearestNeighbor();
+                    case PASS_THROUGH -> new PassThrough();
+                    case FIT_GAUSSIAN -> new FitGaussian();
+                    case FIT_MOFFAT -> new FitMoffat();
+                };
+            }
+
+            @Override
+            public String toString() {
+                return displayName;
+            }
+        }
+    }
+
+    enum PatchTypeSource {
+        DISABLED,
+        LCO_FILE,
+        BPM_FILE,
+        ;
+    }
+
+    sealed interface Mask permits Mask.CompositeMask, Mask.IPMask, Mask.ListMask {
+        record IPMask(ImageProcessor mask) implements Mask {
+            @Override
+            public boolean isBadPixel(int x, int y) {
+                return mask.getf(x, y) > 0;
+            }
+
+            @Override
+            public PatchType getPatchType(int x, int y) {
+                return isBadPixel(x, y) ? TYPE.get().toPatchType() : null;
+            }
+
+            @Override
+            public boolean skip() {
+                return false;
+            }
+
+            @Override
+            public ListMask toListMask() {
+                Collection<BpmPixel> pxs = IntStream.range(0, mask.getPixelCount())
+                        .parallel()
+                        .filter(i -> mask.getf(i) > 0)
+                        .mapToObj(i -> new BpmPixel.Pixel(i % mask.getWidth(), i / mask.getWidth()))
+                        .collect(Collectors.toSet());
+                return new ListMask(Map.of(TYPE.get().toPatchType(), pxs));
+            }
+        }
+
+        record ListMask(Map<PatchType, Collection<BpmPixel>> masks) implements Mask {
+            public ListMask(BpmFile bpm) {
+                this(bpm.patches());
+            }
+
+            @Override
+            public boolean isBadPixel(int x, int y) {
+                var pixel = new BpmPixel.Pixel(x, y);
+                for (var patchEntry : masks.entrySet()) {
+                    if (patchEntry.getValue().contains(pixel)) {
+                        return true;
+                    }
+                }
+
+                return false;
+            }
+
+            @Override
+            public PatchType getPatchType(int x, int y) {
+                var pixel = new BpmPixel.Pixel(x, y);
+                for (var patchEntry : masks.entrySet()) {
+                    if (patchEntry.getValue().contains(pixel)) {
+                        return patchEntry.getKey();
+                    }
+                }
+
+                return null;
+            }
+
+            @Override
+            public boolean skip() {
+                return masks().isEmpty();
+            }
+
+            @Override
+            public ListMask toListMask() {
+                return this;
+            }
+        }
+        record CompositeMask(Collection<Mask> masks) implements Mask {
+            public CompositeMask(Mask... masks) {
+                this(Arrays.asList(masks));
+            }
+
+            @Override
+            public boolean isBadPixel(int x, int y) {
+                return masks.stream().anyMatch(m -> m.isBadPixel(x, y));
+            }
+
+            @Override
+            public PatchType getPatchType(int x, int y) {
+                return masks.stream().map(m -> m.getPatchType(x, y))
+                        .filter(Objects::nonNull).findFirst().orElse(null);
+            }
+
+            @Override
+            public boolean skip() {
+                return masks.isEmpty() || masks.stream().allMatch(Mask::skip);
+            }
+
+            @Override
+            public ListMask toListMask() {
+                var m = new IdentityHashMap<PatchType, Collection<BpmPixel>>();
+                for (Mask mask : masks) {
+                    var lm = mask.toListMask();
+                    m.putAll(lm.masks());
+                }
+                return new ListMask(m);
+            }
+        }
+
+        boolean isBadPixel(int x, int y);
+
+        PatchType getPatchType(int x, int y);
+
+        boolean skip();
+
+        ListMask toListMask();
+    }
+
+    sealed interface BpmPixel {
+        record Pixel(int x, int y) implements BpmPixel {}
+        record SourcePixel(int x, int y) implements BpmPixel {}
+        record UncorrectedPixel(int x, int y) implements BpmPixel {}
+
+        int x();
+        int y();
+    }
+
+}

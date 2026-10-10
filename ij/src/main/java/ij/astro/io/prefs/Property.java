@@ -1,31 +1,19 @@
 package ij.astro.io.prefs;
 
-import java.awt.Dimension;
-import java.awt.Frame;
-import java.awt.Point;
-import java.awt.event.ComponentAdapter;
-import java.awt.event.ComponentEvent;
-import java.awt.event.ItemEvent;
-import java.awt.event.ItemListener;
-import java.awt.event.WindowAdapter;
-import java.awt.event.WindowEvent;
-import java.lang.ref.WeakReference;
-import java.lang.reflect.Field;
-import java.lang.reflect.Modifier;
-import java.util.Collections;
-import java.util.HashMap;
-import java.util.HashSet;
-import java.util.Map;
-import java.util.Objects;
-import java.util.Set;
-import java.util.WeakHashMap;
-import java.util.function.Function;
-import java.util.function.Supplier;
-
 import ij.IJ;
 import ij.Prefs;
 import ij.astro.gui.nstate.NState;
 import ij.astro.util.UIHelper;
+
+import javax.swing.*;
+import java.awt.*;
+import java.awt.event.*;
+import java.lang.ref.WeakReference;
+import java.lang.reflect.Field;
+import java.lang.reflect.Modifier;
+import java.util.*;
+import java.util.function.Function;
+import java.util.function.Supplier;
 
 /**
  * {@link Enum} values are stored and loaded based on the value of {@link Enum#name()},
@@ -59,6 +47,11 @@ public class Property<T> {
 
     public Property(T defaultValue, Object owner) {
         this(defaultValue, "", "", null, _ -> null, owner);
+    }
+
+    public Property(T defaultValue, Object owner, PropertyLoadValidator<T> loadValidator) {
+        this(defaultValue, "", "", null, _ -> null, owner);
+        this.loadValidator = loadValidator;
     }
 
     public Property(T defaultValue, Function<T, String> serializer, Function<String, T> deserializer, Object owner) {
@@ -219,11 +212,11 @@ public class Property<T> {
         weakListener.put(owner, listener);
     }
 
-    public void locationSavingWindow(Frame window) {
+    public void locationSavingWindow(Window window) {
         locationSavingWindow(window, IJ.getInstance());
     }
 
-    public void locationSavingWindow(Frame window, Frame reference) {
+    public void locationSavingWindow(Window window, Frame reference) {
         if (type != Point.class) {
             return;
         }
@@ -335,10 +328,24 @@ public class Property<T> {
     }
 
     public ItemListener toItemListener() {
-        if (type != Boolean.TYPE && type != Boolean.class) {
-            throw new IllegalArgumentException("Only boolean properties can be converted to ItemListeners");
+        if (type == Boolean.TYPE || type == Boolean.class) {
+            return (e) -> set((T)(Boolean)(e.getStateChange() == ItemEvent.SELECTED));
         }
-        return (e) -> set((T)(Boolean)(e.getStateChange() == ItemEvent.SELECTED));
+
+        if (type.isEnum()) {
+            return (e) -> set((T)(e.getItem()));
+        }
+
+        throw new IllegalArgumentException("Only boolean or enum properties can be converted to ItemListeners");
+    }
+
+    public void registerChangeListener(JSpinner spinner) {
+        if (spinner.getModel() instanceof SpinnerNumberModel spinnerNumberModel) {
+            if (!type.isInstance(spinnerNumberModel.getNumber())) {
+                throw new IllegalArgumentException("Only number properties can be converted to SpinnerNumberModel");
+            }
+            spinnerNumberModel.addChangeListener(_ -> set((T) spinnerNumberModel.getValue()));
+        }
     }
 
     private String getOrCreatePropertyKey() {
@@ -431,7 +438,12 @@ public class Property<T> {
                     return (T) ((NState<?>) value).fromString(nv);
                 }
             }
-            return (T) Enum.valueOf((Class<? extends Enum>) type, nv);
+            try {
+                return (T) Enum.valueOf((Class<? extends Enum>) type, nv);
+            } catch (IllegalArgumentException _) {
+                IO.println("Failed to parse enum value: " + nv + " for type: " + type);
+                return (T) value;
+            }
         } else if (type == Point.class) {
             var v = Prefs.getLocation(getPropertyKey());
             return v == null ? value : (T) v;

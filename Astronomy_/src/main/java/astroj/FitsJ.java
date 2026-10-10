@@ -2,17 +2,13 @@
 
 package astroj;
 
-import java.util.Arrays;
-import java.util.Calendar;
-import java.util.Date;
-import java.util.GregorianCalendar;
-import java.util.Properties;
-
 import ij.IJ;
 import ij.ImagePlus;
 import ij.ImageStack;
 import ij.WindowManager;
 import ij.util.Tools;
+
+import java.util.*;
 
 /**
  * A collection of helpful static methods to read, manipulate, write, and query FITS-based images within ImageJ.
@@ -1192,6 +1188,9 @@ public class FitsJ {
 			s = s.substring(1, s.length() - 1);
 		}
         d = Tools.parseDouble(s);
+		if (Double.isNaN(d) && s.contains(",")) {
+			d = Tools.parseDouble(s.replace(",", "."));
+		}
 		if (Double.isNaN(d)) {
 			d = getCardDoubleValueFromSexagesimal(card, 0);
 		}

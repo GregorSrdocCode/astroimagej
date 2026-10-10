@@ -1,0 +1,534 @@
+package astroj.fits;
+
+import astroj.FittedPlane;
+import com.google.auto.service.AutoService;
+import ij.astro.logging.AIJLogger;
+import ij.astro.util.PixelPatcher;
+import ij.process.ImageProcessor;
+import ij.util.ArrayUtil;
+import util.prefs.RegionExclusion;
+
+import java.awt.*;
+import java.util.*;
+
+@AutoService(PixelPatcher.class)
+public class PixelPatcherImpl implements PixelPatcher {
+    Rectangle searchableRegion;
+
+    @Override
+    public void patch(ImageProcessor ip, Mask inMask) {
+        if (inMask.skip()) {
+            return;
+        }
+
+        var visited = new BitSet(ip.getHeight() * ip.getWidth());
+
+        var mask = inMask.toListMask();
+        searchableRegion = PixelPatcher.IGNORE_BORDERS.get() ?
+                RegionExclusion.restrict(ip, true) : new Rectangle(ip.getWidth(), ip.getHeight());
+
+        for (Map.Entry<PatchType, Collection<BpmPixel>> patchEntry : mask.masks().entrySet()) {
+            var patchType = patchEntry.getKey();
+            var patchPixels = patchEntry.getValue();
+
+            for (BpmPixel currentBadPixel : patchPixels) {
+                var x = currentBadPixel.x();
+                var y = currentBadPixel.y();
+
+                if (x < 0 || y < 0 || x >= ip.getWidth() || y >= ip.getHeight()) {
+                    continue;
+                }
+
+                if (PixelPatcher.IGNORE_BORDERS.get()) {
+                    if (!searchableRegion.contains(x + 0.5, y + 0.5)) {
+                        continue;
+                    }
+                }
+
+                if (visited.get(toIndex(ip, x, y))) {
+                    continue;
+                }
+
+                switch (patchType) {
+                    case PatchType.PassThrough() -> {
+                        ip.markUncorrectedBadPixel(x, y);
+                    }
+                    case PatchType.ConstantValue(var val) -> {
+                        ip.setf(x, y, (float) val);
+                        ip.markBadPixel(x, y);
+                    }
+                    case PatchType.AverageFill(int xRadius, int yRadius) -> {
+                        var average = ArrayUtil.average(collect(ip, mask, x, y, xRadius, yRadius));
+
+                        // No unmasked values present
+                        if (Double.isNaN(average)) {
+                            ip.markUncorrectedBadPixel(x, y);
+                            continue;
+                        }
+
+                        ip.setf(x, y, (float) average);
+                        ip.markBadPixel(x, y);
+                    }
+                    case PatchType.MedianFill(int xRadius, int yRadius) -> {
+                        var median = ArrayUtil.median(collect(ip, mask, x, y, xRadius, yRadius));
+
+                        // No unmasked values present
+                        if (Double.isNaN(median)) {
+                            ip.markUncorrectedBadPixel(x, y);
+                            continue;
+                        }
+
+                        ip.setf(x, y, (float) median);
+                        ip.markBadPixel(x, y);
+                    }
+                    case PatchType.FloodFill(boolean useMedian) -> {
+                        var region = collectContinuousRegion(ip, mask, visited, x, y);
+
+                        if (ignoreRegion(region)) {
+                            for (Pixel pixel : region.pixels()) {
+                                ip.markUncorrectedBadPixel(pixel.x, pixel.y);
+                            }
+                            continue;
+                        }
+
+                        var borderValues = region.borderPixels().stream()
+                                .mapToDouble(p -> ip.getf(p.x, p.y))
+                                .toArray();
+
+                        if (borderValues.length == 0) {
+                            //todo throw error no good pixels
+                            for (Pixel pixel : region.pixels()) {
+                                ip.markUncorrectedBadPixel(pixel.x, pixel.y);
+                            }
+                            continue;
+                        }
+
+                        // Compute border value
+                        double fillValue;
+                        if (useMedian) {
+                            Arrays.sort(borderValues);
+                            int m = borderValues.length / 2;
+                            if ((borderValues.length & 1) == 1) {
+                                fillValue = borderValues[m];
+                            } else {
+                                fillValue = (borderValues[m - 1] + borderValues[m]) / 2.0;
+                            }
+                        } else {
+                            var sum = 0.0D;
+                            for (double v : borderValues) {
+                                sum += v;
+                            }
+                            fillValue = sum / borderValues.length;
+                        }
+
+                        // Fill region
+                        var fv = (float) fillValue;
+                        for (var rp : region.pixels()) {
+                            ip.setf(rp.x, rp.y, fv);
+                            ip.markBadPixel(x, y);
+                        }
+                    }
+                    case PatchType.NearestNeighbor(var mergeType) -> {
+                        var region = collectContinuousRegion(ip, mask, visited, x, y);
+
+                        if (ignoreRegion(region)) {
+                            for (Pixel pixel : region.pixels()) {
+                                ip.markUncorrectedBadPixel(pixel.x, pixel.y);
+                            }
+                            continue;
+                        }
+
+                        var borderPixels = region.borderPixels();
+                        var badPixels = region.pixels();
+
+                        if (borderPixels.isEmpty()) {
+                            //todo throw error no good pixels
+                            for (Pixel pixel : region.pixels()) {
+                                ip.markUncorrectedBadPixel(pixel.x, pixel.y);
+                            }
+                            continue;
+                        }
+
+                        var borderCount = borderPixels.size();
+                        var borderX = new int[borderCount];
+                        var borderY = new int[borderCount];
+                        var borderValues = new float[borderCount];
+
+                        var borderIndex = 0;
+                        for (var bp : borderPixels) {
+                            borderX[borderIndex] = bp.x;
+                            borderY[borderIndex] = bp.y;
+                            borderValues[borderIndex] = ip.getf(bp.x, bp.y);
+                            borderIndex++;
+                        }
+
+                        var nearestBorderValues = new double[borderCount];
+
+                        for (var badPixel : badPixels) {
+                            var px = badPixel.x;
+                            var py = badPixel.y;
+
+                            var nearestDistance = Integer.MAX_VALUE;
+                            var valueCount = 0;
+
+                            for (int i = 0; i < borderCount; i++) {
+                                var dx = borderX[i] - px;
+                                var dy = borderY[i] - py;
+                                var distance = dx * dx + dy * dy;
+
+                                if (distance < nearestDistance) {
+                                    nearestDistance = distance;
+                                    valueCount = 1;
+                                    nearestBorderValues[0] = borderValues[i];
+                                } else if (distance == nearestDistance) {
+                                    nearestBorderValues[valueCount++] = borderValues[i];
+                                }
+                            }
+
+                            var fillValue = switch (mergeType) {
+                                case FIRST_NEAREST_NEIGHBOR -> nearestBorderValues[0];
+                                case AVERAGE -> {
+                                    var sum = 0.0D;
+                                    for (int i = 0; i < valueCount; i++) {
+                                        sum += nearestBorderValues[i];
+                                    }
+                                    yield sum / valueCount;
+                                }
+                                case MEDIAN -> {
+                                    Arrays.sort(nearestBorderValues, 0, valueCount);
+                                    int m = valueCount / 2;
+                                    if ((valueCount % 2) == 0) {
+                                        yield nearestBorderValues[m];
+                                    } else {
+                                        if (m == 0 && valueCount > 1) {
+                                            yield (nearestBorderValues[m + 1] + nearestBorderValues[m]) / 2.0;
+                                        } else if (m == 0) {
+                                            yield nearestBorderValues[m];
+                                        } else {
+                                            yield (nearestBorderValues[m - 1] + nearestBorderValues[m]) / 2.0;
+                                        }
+                                    }
+                                }
+                            };
+
+                            ip.setf(px, py, (float) fillValue);
+                            ip.markBadPixel(px, py);
+                        }
+                    }
+                    case PatchType.FitPlane() -> {
+                        var region = collectContinuousRegion(ip, mask, visited, x, y);
+
+                        if (ignoreRegion(region)) {
+                            for (Pixel pixel : region.pixels()) {
+                                ip.markUncorrectedBadPixel(pixel.x, pixel.y);
+                            }
+                            continue;
+                        }
+
+                        var bounds = region.bounds();
+
+                        var fitter = new FittedPlane(bounds.width * bounds.height);
+
+                        if (region.borderPixels.size() > 4) {
+                            for (Pixel borderPixel : region.borderPixels) {
+                                fitter.addPoint(borderPixel.x, borderPixel.y, ip.getf(borderPixel.x, borderPixel.y));
+                            }
+
+                            if (!fitter.fitPlane()) {
+                                AIJLogger.log("Fitting Plane failed for Pixel Patcher");
+                                var avg = 0D;
+                                for (Pixel borderPixel : region.borderPixels) {
+                                    avg += ip.getf(borderPixel.x, borderPixel.y);
+                                }
+
+                                avg /= region.borderPixels.size();
+
+                                for (Pixel pixel : region.pixels) {
+                                    ip.setf(pixel.x, pixel.y, (float) avg);
+                                    ip.markBadPixel(x, y);
+                                }
+                                continue;
+                            }
+
+                            for (Pixel pixel : region.pixels) {
+                                ip.setf(pixel.x, pixel.y, (float) fitter.valueAt(pixel.x, pixel.y));
+                                ip.markBadPixel(x, y);
+                            }
+                        } else {
+                            var avg = 0D;
+                            for (Pixel borderPixel : region.borderPixels) {
+                                avg += ip.getf(borderPixel.x, borderPixel.y);
+                            }
+
+                            avg /= region.borderPixels.size();
+
+                            for (Pixel pixel : region.pixels) {
+                                ip.setf(pixel.x, pixel.y, (float) avg);
+                                ip.markBadPixel(x, y);
+                            }
+                        }
+                    }
+                    case PatchType.FitGaussian(int minCount) -> {
+                        var region = collectContinuousRegion(ip, mask, visited, x, y);
+
+                        if (ignoreRegion(region)) {
+                            for (Pixel pixel : region.pixels()) {
+                                ip.markUncorrectedBadPixel(pixel.x, pixel.y);
+                            }
+                            continue;
+                        }
+
+                        var bounds = (Rectangle) region.bounds().clone();
+
+                        var n = (region.bounds.height * region.bounds.width) - region.pixels().size();
+
+                        var size = 0;
+                        var pSize = 0;
+                        do {
+                            bounds.grow(1, 1);
+                            bounds.x = Math.max(bounds.x, 0);
+                            bounds.y = Math.max(bounds.y, 0);
+                            bounds.width = Math.min(bounds.width, ip.getWidth() - bounds.x);
+                            bounds.height = Math.min(bounds.height, ip.getHeight() - bounds.y);
+
+                            pSize = size;
+                            size = bounds.width * bounds.height;
+                            n = 0;
+                            for (int i = bounds.x; i < bounds.x + bounds.width && i < ip.getWidth(); i++) {
+                                for (int j = bounds.y; j < bounds.y + bounds.height && j < ip.getHeight(); j++) {
+                                    if ((mask.isBadPixel(i, j))) {
+                                        continue;
+                                    }
+                                    n++;
+                                }
+                            }
+                        } while (n < minCount && bounds.width < ip.getWidth() && bounds.height < ip.getHeight() && pSize != size);
+
+                        if (pSize == size) {
+                            AIJLogger.log("Failed to find region with enough good pixels for region: " +
+                                    bounds);
+                            continue;
+                        }
+
+                        // Create region with enough pixels to fit a Gaussian
+                        var nr = new Region();
+                        for (int i = bounds.x; i < bounds.x + bounds.width && i < ip.getWidth(); i++) {
+                            for (int j = bounds.y; j < bounds.y + bounds.height && j < ip.getHeight(); j++) {
+                                if ((mask.isBadPixel(i, j))) {
+                                    nr.addToRegion(i, j);
+                                } else {
+                                    nr.addBorderPixel(i, j);
+                                }
+                            }
+                        }
+
+                        try {
+                            Gaussian2DFitter.fit(ip, nr).apply(ip, region);
+                        } catch (IllegalStateException | IllegalArgumentException e) {
+                            for (Pixel pixel : region.pixels()) {
+                                ip.markUncorrectedBadPixel(pixel.x, pixel.y);
+                            }
+                        }
+                    }
+                    case PatchType.FitMoffat(int minCount, int maxIter, double relErr, double absErr) -> {
+                        var region = collectContinuousRegion(ip, mask, visited, x, y);
+
+                        if (ignoreRegion(region)) {
+                            for (Pixel pixel : region.pixels()) {
+                                ip.markUncorrectedBadPixel(pixel.x, pixel.y);
+                            }
+                            continue;
+                        }
+
+                        var bounds = (Rectangle) region.bounds().clone();
+
+                        var n = (region.bounds.height * region.bounds.width) - region.pixels().size();
+
+                        var size = 0;
+                        var pSize = 0;
+                        do {
+                            bounds.grow(1, 1);
+                            bounds.x = Math.max(bounds.x, 0);
+                            bounds.y = Math.max(bounds.y, 0);
+                            bounds.width = Math.min(bounds.width, ip.getWidth() - bounds.x);
+                            bounds.height = Math.min(bounds.height, ip.getHeight() - bounds.y);
+
+                            pSize = size;
+                            size = bounds.width * bounds.height;
+                            n = 0;
+                            for (int i = bounds.x; i < bounds.x + bounds.width && i < ip.getWidth(); i++) {
+                                for (int j = bounds.y; j < bounds.y + bounds.height && j < ip.getHeight(); j++) {
+                                    if ((mask.isBadPixel(i, j))) {
+                                        continue;
+                                    }
+                                    n++;
+                                }
+                            }
+                        } while (n < minCount && bounds.width < ip.getWidth() && bounds.height < ip.getHeight() && pSize != size);
+
+                        if (pSize == size) {
+                            AIJLogger.log("Failed to find region with enough good pixels for region: " +
+                                    bounds);
+                            continue;
+                        }
+
+                        var xs = new double[n];
+                        var ys = new double[n];
+                        var zs = new double[n];
+
+                        var c = 0;
+                        for (int i = bounds.x; i < bounds.x + bounds.width && i < ip.getWidth(); i++) {
+                            for (int j = bounds.y; j < bounds.y + bounds.height && j < ip.getHeight(); j++) {
+                                if ((mask.isBadPixel(i, j))) {
+                                    continue;
+                                }
+                                xs[c] = i;
+                                ys[c] = j;
+                                zs[c++] = ip.getf(i, j);
+                            }
+                        }
+
+                        var f = new Moffat2DFitter(xs, ys, zs, maxIter, relErr, absErr);
+
+                        for (Pixel pixel : region.pixels) {
+                            ip.setf(pixel.x, pixel.y, (float) f.fittedValue(pixel.x, pixel.y));
+                            ip.markBadPixel(x, y);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private Region collectContinuousRegion(ImageProcessor ip, Mask mask, BitSet visited, int startX, int startY) {
+        var stack = new ArrayDeque<Pixel>();
+        var region = new Region();
+
+        stack.push(new Pixel(startX, startY));
+        visited.set(toIndex(ip, startX, startY));
+
+        while (!stack.isEmpty()) {
+            var p = stack.pop();
+            int px = p.x, py = p.y;
+            region.addToRegion(p);
+            ip.markBadPixel(px, py);
+
+            // Explore neighbors
+            for (int dy = -1; dy <= 1; dy++) {
+                for (int dx = -1; dx <= 1; dx++) {
+                    if (dx == 0 && dy == 0) {
+                        continue;
+                    }
+
+                    int nx = px + dx, ny = py + dy;
+
+                    if (nx < 0 || nx >= ip.getWidth() || ny < 0 || ny >= ip.getHeight()) {
+                        continue;
+                    }
+
+                    if (PixelPatcher.IGNORE_BORDERS.get() && searchableRegion != null) {
+                        if (!searchableRegion.contains(nx + 0.5, ny + 0.5)) {
+                            continue;
+                        }
+                    }
+
+                    if (mask.isBadPixel(nx, ny)) {
+                        if (!visited.get(toIndex(ip, nx, ny))) {
+                            visited.set(toIndex(ip, nx, ny));
+                            stack.push(new Pixel(nx, ny));
+                        }
+                    } else {
+                        region.addBorderPixel(nx, ny);
+                        ip.markBadPixelSource(nx, ny);
+                    }
+                }
+            }
+        }
+
+        return region;
+    }
+
+    /**
+     * Collects good pixel values in the region
+     */
+    private double[] collect(ImageProcessor ip, Mask mask, int xCenter, int yCenter, int xRadius, int yRadius) {
+        var pixels = new double[(2 * xRadius + 1) * (2 * yRadius + 1)];
+        var index = 0;
+        for (int j = Math.max(0, yCenter - yRadius); j < Math.min(ip.getHeight(), yCenter + yRadius + 1); j++) {
+            for (int i = Math.max(0, xCenter - xRadius); i < Math.min(ip.getWidth(), xCenter + xRadius + 1); i++) {
+                // Filter out bad pixels
+                if (mask.isBadPixel(i, j)) {
+                    continue;
+                }
+
+                if (PixelPatcher.IGNORE_BORDERS.get() && searchableRegion != null) {
+                    if (!searchableRegion.contains(i + 0.5, j + 0.5)) {
+                        continue;
+                    }
+                }
+
+                pixels[index++] = ip.getf(i, j);
+                ip.markBadPixelSource(i, j);
+            }
+        }
+
+        return Arrays.copyOf(pixels, index);
+    }
+
+    private int toIndex(ImageProcessor ip, int x, int y) {
+        return y * ip.getWidth() + x;
+    }
+
+    private boolean ignoreRegion(Region region) {
+        return PixelPatcher.BPM_MODE.get() == PatchTypeSource.LCO_FILE &&
+                PixelPatcher.REGION_LIMIT.get() > 0 && region.pixels.size() >= PixelPatcher.REGION_LIMIT.get();
+    }
+
+    protected record Pixel(int x, int y) {}
+
+    protected record Region(Rectangle bounds, Collection<Pixel> pixels, Collection<Pixel> borderPixels) {
+        Region() {
+            this(new Rectangle(), new HashSet<>(), new HashSet<>());
+            bounds.x = -1;
+            bounds.y = -1;
+            bounds.width = 0;
+            bounds.height = 0;
+        }
+
+        void addToRegion(int x, int y) {
+            addToRegion(new Pixel(x, y));
+        }
+
+        void addToRegion(Pixel p) {
+            pixels.add(p);
+            growBounds(p);
+        }
+
+        void addBorderPixel(int x, int y) {
+            addBorderPixel(new Pixel(x, y));
+        }
+
+        void addBorderPixel(Pixel p) {
+            borderPixels.add(p);
+            growBounds(p);
+        }
+
+        private void growBounds(Pixel p) {
+            if (bounds.x < 0) {
+                bounds.x = p.x;
+                bounds.y = p.y;
+                bounds.width = 1;
+                bounds.height = 1;
+                return;
+            }
+            var minX = Math.min(bounds.x, p.x);
+            var minY = Math.min(bounds.y, p.y);
+            var maxX = Math.max(bounds.x + bounds.width - 1, p.x);
+            var maxY = Math.max(bounds.y + bounds.height - 1, p.y);
+            bounds.x = minX;
+            bounds.y = minY;
+            bounds.width = maxX - minX + 1;
+            bounds.height = maxY - minY + 1;
+        }
+    }
+}
